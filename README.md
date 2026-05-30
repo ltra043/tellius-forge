@@ -3,9 +3,9 @@ A repository containing reverse-engineered research, documentation, and Blender 
 - Fire Emblem: Path of Radiance (FE9 / 蒼炎の軌跡)
 - Fire Emblem: Radiant Dawn (FE10 / 暁の女神)
 
-TODO: insert model-in-blender-screenshot and screenshot of modified-model-in-game ??
-
-![Ike in Blender](images/animation/lord-move_sw.gif)
+<p align="center">
+  <img src="images/animation/lord-move_sw.gif" alt="Ike in Blender" width="300">
+</p>
 
 
 ## Current Features
@@ -21,7 +21,7 @@ TODO: insert model-in-blender-screenshot and screenshot of modified-model-in-gam
   
 ## Repository Structure
 <details>
-<summary>Click to Expand</summary>
+<summary>Click to view Repository Structure</summary>
 
 - [docs/](docs/) contains user-oriented guides.
 - [research/](research/)  contains reverse-engineering notes, file format research, and technical findings
@@ -64,7 +64,7 @@ This project primarily targets overworld (`ymu/`) models and animations from FE9
 
 #### Partially supported
 - Overworld animation `*.ga` import/export; compatibility varies depending on skeleton structure. (in `ymu/model*/` or extracted from `ymu/model*/pack.cmp`)
-  - See [fe9-skeleton-flag-analysis.md](docs/fe9-skeleton-flag-analysis.md) and [fe10-skeleton-flag-analysis.md](docs/fe10-skeleton-flag-analysis.md) in `docs/` for lists of models from each game, organized from most to least likely compatibile with animations.
+  - See [animation-compatibility.md](docs/animation-compatibility.md) for more info.
 - Map object animation `object*.ga` import/export. (extracted from `zmap/map*/map.cmp`)
   
 
