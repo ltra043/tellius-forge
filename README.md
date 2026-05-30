@@ -8,14 +8,17 @@ TODO: insert model-in-blender-screenshot and screenshot of modified-model-in-gam
 ## Current Features
 
 - Import FE9/FE10 assets (body `.g`, skeleton `.gs`, and animation `.ga` files)
-- Export new or modified assets
-- Basic animation editing support (currently limited model compatibility??)
-- Texture workflow support
+- Export FE9/FE10 assets
+- Modify body and skeleton assets
+- Rename skeleton bones
+- Modify animations
+- Create custom animations
+- Modify or add textures
 - Reverse-engineered format documentation
   
 ## Repository Structure
 <details>
-<summary>Folder Tree</summary>
+<summary>Click to Expand</summary>
 
 - [docs/](docs/) contains user-oriented guides.
 - [research/](research/)  contains reverse-engineering notes, file format research, and technical findings
@@ -57,7 +60,8 @@ This project primarily targets overworld (`ymu/`) models and animations from FE9
 
 
 #### Partially supported
-- Overworld animation `*.ga` import/export; compatibility varies depending on skeleton structure. (in `ymu/model*/` or extracted from `ymu/model*/pack.cmp`) 
+- Overworld animation `*.ga` import/export; compatibility varies depending on skeleton structure. (in `ymu/model*/` or extracted from `ymu/model*/pack.cmp`)
+  - See [fe9-skeleton-flag-analysis.md](docs/fe9-skeleton-flag-analysis.md) and [fe10-skeleton-flag-analysis.md](docs/fe10-skeleton-flag-analysis.md) in `docs/` for lists of models from each game, organized from most to least likely compatibile with animations.
 - Map object animation `object*.ga` import/export. (extracted from `zmap/map*/map.cmp`)
   
 
@@ -73,10 +77,10 @@ This project primarily targets overworld (`ymu/`) models and animations from FE9
 <summary>Resources</summary>
     
 1. Blender 4.2+ (tested using v5.0.1)
-2. Current plugin available in [Releases](??) or [plugin/](??)
+2. Current plugin available in [Releases](??) or [plugin/](plugin/tellius-forge.py)
 3. [BrawlCrate](??)
 4. [Lumina](??) by Thane98
-5. Python 3.10+ (TODO??: convert side-tools to executables so python isn't necessary)
+5. Auxiliary Tools in [tools/](tools/)
 6. Optional: [ImHex](??) or any hex editor
 
 </details>
@@ -101,14 +105,15 @@ Recommended starting points:
 
 ## Credits
     
-FE9/FE10 Blender plugin based originally on a [Noesis import plugin](https://github.com/Zheneq/Noesis-Plugins) created by [Zheneq](https://github.com/Zheneq). The source code was used and expanded with the original author's permission.
+Asset analysis and the blender plugin are based on a [Noesis import plugin](https://github.com/Zheneq/Noesis-Plugins) created by [Zheneq](https://github.com/Zheneq). The source code was used and expanded with the original author's permission.
 
-This project substantially extends the original work with:
+Initial conversion of the Noesis plugin into a Blender plugin by [ATMachine](https://github.com/ATMachine1).
+
+This project substantially extends these works with:
 - export support
 - animation support
 - improved skeleton imports
 - additional format research
-- Blender integration
 
 AI-assisted tools were used as a development aid for prototyping and asset analysis. All findings were verified through direct testing in Blender and in-game.
 
