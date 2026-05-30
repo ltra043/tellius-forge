@@ -26,7 +26,10 @@ A repository containing reverse-engineered research, documentation, and Blender 
 - [docs/](docs/) contains user-oriented guides.
 - [research/](research/)  contains reverse-engineering notes, file format research, and technical findings
 - [plugin/](plugin/)   contains main blender plugin.
-- [tools/](tools/)  contains auxiliary tools.
+- [tools/](tools/)  contains src code of auxiliary tools, organized by targeted asset. Necessary tools will be available as executables in [Releases](releases/)
+    - skeleton/
+    - body/
+    - animation/ 
 - [images/](images/)    contains images organized by topic.
     - skeleton/  
     - body/  
@@ -80,19 +83,22 @@ This project primarily targets overworld (`ymu/`) models and animations from FE9
 <summary>Resources</summary>
     
 1. Blender 4.2+ (tested using v5.0.1)
-2. Current plugin available in [Releases](??) or [plugin/](plugin/tellius-forge.py)
-3. [BrawlCrate](??)
-4. [Lumina](??) by Thane98
+2. Current plugin available in [Releases](releases/) or [plugin/](plugin/tellius-forge.py)
+3. [BrawlCrate](https://github.com/soopercool101/BrawlCrate)
+4. [Lumina](https://github.com/thane98/lumina) by thane98
 5. Auxiliary Tools in [tools/](tools/)
-6. Optional: [ImHex](??) or any hex editor
+6. Optional: [ImHex](https://imhex.werwolv.net/) or any hex editor
 
 </details>
 
 <details>
 <summary>Installing the Blender Plugin</summary>
 
-??
-TODO: insert blender-addon-window-screenshot-with-annotations and screenshot of added-import-options-ater-installed-plugin ??
+1. In Blender, go to **Edit > Preferences > Add-ons**.
+2. Click the dropdown arrow (**▼**) at the top-right and select **Install from Disk...**.
+3. Navigate to `tellius-forge.py` and select it to install.
+4. Search for "Fire Emblem" and check the box to enable.
+5. The plugin adds new options under **File > Import** and **File > Export**.
 
 </details>
 
