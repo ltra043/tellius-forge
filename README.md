@@ -1,9 +1,12 @@
 # Tellius Asset Research & Blender Plugin
 A repository containing reverse-engineered research, documentation, and Blender tooling for assets from the Fire Emblem Tellius games (GC/Wii):
-- Fire Emblem Path of Radiance (FE9 / 蒼炎の軌跡)
-- Fire Emblem Radiant Dawn (FE10 / 暁の女神)
+- Fire Emblem: Path of Radiance (FE9 / 蒼炎の軌跡)
+- Fire Emblem: Radiant Dawn (FE10 / 暁の女神)
 
 TODO: insert model-in-blender-screenshot and screenshot of modified-model-in-game ??
+
+![Ike in Blender](images/animation/lord-move_sw.gif)
+
 
 ## Current Features
 
