@@ -1,7 +1,13 @@
-# Tellius Forge
-A repository containing reverse-engineered research, documentation, and Blender tooling for assets from the Fire Emblem Tellius games (GC/Wii):
-- Fire Emblem: Path of Radiance (FE9 / 蒼炎の軌跡)
-- Fire Emblem: Radiant Dawn (FE10 / 暁の女神)
+
+<p align="center">
+  <img src="images/ui/icon.svg" alt="Tellius Forge Logo" width="64"/>
+</p>
+
+<h1 align="center">Tellius Forge</h1>
+
+<p align="center">
+A repository containing reverse-engineered research, documentation, and Blender tooling for assets from Fire Emblem: Path of Radiance (FE9 / 蒼炎の軌跡) and Fire Emblem: Radiant Dawn (FE10 / 暁の女神)
+</p>
 
 <p align="center">
   <img src="images/animation/lord-move_sw.gif" alt="Ike in Blender" width="300">
@@ -9,36 +15,20 @@ A repository containing reverse-engineered research, documentation, and Blender 
 
 
 ## Current Features
-
-- Import FE9/FE10 assets (body `.g`, skeleton `.gs`, and animation `.ga` files)
-- Export FE9/FE10 assets
-- Modify body and skeleton assets
-- Rename skeleton bones
-- Modify animations
+- Import FE9/FE10 bodies, skeletons, and animations
+- Export FE9/FE10 bodies, skeletons, and animations
+- Edit FE9/FE10 bodies, skeletons, textures, and animations
 - Create custom animations
-- Modify or add textures
-- Reverse-engineered format documentation
-  
-## Repository Structure
-<details>
-<summary>Click to view Repository Structure</summary>
+- Rename and modify skeleton bones
+- Reverse-engineered format documentation and research
 
-- [docs/](docs/) contains user-oriented guides.
-- [research/](research/)  contains reverse-engineering notes, file format research, and technical findings
-- [plugin/](plugin/)   contains main blender plugin.
-- [tools/](tools/)  contains src code of auxiliary tools, organized by targeted asset. Necessary tools will be available as executables in [Releases](releases/)
-- [images/](images/)    contains images organized by topic.
+## Documentation
 
-</details>
+Detailed workflows and tutorials are available in [docs/](docs/).
 
-## Quick Start
-
-1. Extract FE9/FE10 assets
-2. Install Blender plugin
-4. Import `.g` and `.gs` files
-5. Edit body/skeleton
-6. Export modified assets
-7. Reinsert files into game archives
+Recommended starting points for new users:
+- [Standard Workflow](docs/standard-workflow.md)
+- Youtube Playlist: [Tellius Forge Tutorials](https://youtube.com/playlist?list=PL650N9tNdfYazuxS5b63BzaUKxZLErT0e)
 
 ## Compatibility & Limitations
 
@@ -70,10 +60,10 @@ This project primarily targets overworld (`ymu/`) models and animations from FE9
 ## Installation
 
 <details>
-<summary>Resources</summary>
+<summary>Requirements & Tools</summary>
     
 1. [Blender](https://www.blender.org/download/) 4.2+ (tested using v5.0.1)
-2. Current plugin available in [Releases](releases/) or [plugin/](plugin/tellius-forge.py)
+2. [Latest release](https://github.com/ltra043/tellius-forge/releases/latest). Source code also available in [plugin/](./plugin/tellius-forge.py) and [tools/](./tools/)
 3. [BrawlCrate](https://github.com/soopercool101/BrawlCrate)
 4. [Lumina](https://github.com/thane98/lumina) by thane98
 5. Additional python scripts in [tools/](tools/). Necessary tools will be available as executables in [Releases](releases/)
@@ -83,22 +73,27 @@ This project primarily targets overworld (`ymu/`) models and animations from FE9
 
 <details>
 <summary>Installing the Blender Plugin</summary>
-
-1. In Blender, go to **Edit > Preferences > Add-ons**.
-2. Click the dropdown arrow (**▼**) at the top-right and select **Install from Disk...**.
-3. Navigate to `tellius-forge.py` and select it to install.
-4. Search for "Fire Emblem" and check the box to enable.
-5. The plugin adds new options under **File > Import** and **File > Export**.
+  
+1. Download the [latest release](https://github.com/ltra043/tellius-forge/releases/latest) of the blender addon `tellius-forge.py` and necessary tools `tellius-forge-toolkit.7z`.
+2. In Blender, go to **Edit > Preferences > Add-ons**.
+3. Click the dropdown arrow (**▼**) at the top-right and select **Install from Disk...**.
+4. Navigate to `tellius-forge.py` and select it to install.
+5. Search for "Fire Emblem" and check the box to enable.
+6. The plugin adds new options under **File > Import** and **File > Export**.
 
 </details>
 
-## Documentation
+## Repository Structure
+<details>
+<summary>Click to view Repository Structure</summary>
 
-Detailed workflows and tutorials are available in [docs/](docs/).
+- [docs/](docs/) contains user-oriented guides.
+- [research/](research/) contains reverse-engineering notes, file format research, and technical findings.
+- [plugin/](plugin/) contains main Blender plugin.
+- [tools/](tools/) contains source code of auxiliary tools, organized by targeted asset. Required tools are also distributed as executables through [Releases](https://github.com/ltra043/tellius-forge/releases/).
+- [images/](images/) contains images organized by topic.
 
-Recommended starting points:
-- [Standard Workflow](docs/standard-workflow.md)
-- Youtube Playlist: Tellius Forge Tutorials
+</details>
 
 ## Credits
     
