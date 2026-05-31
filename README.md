@@ -82,11 +82,11 @@ This project primarily targets overworld (`ymu/`) models and animations from FE9
 <details>
 <summary>Resources</summary>
     
-1. Blender 4.2+ (tested using v5.0.1)
+1. [Blender](https://www.blender.org/download/) 4.2+ (tested using v5.0.1)
 2. Current plugin available in [Releases](releases/) or [plugin/](plugin/tellius-forge.py)
 3. [BrawlCrate](https://github.com/soopercool101/BrawlCrate)
 4. [Lumina](https://github.com/thane98/lumina) by thane98
-5. Auxiliary Tools in [tools/](tools/)
+5. Additional python scripts in [tools/](tools/). Necessary tools will be available as executables in [Releases](releases/)
 6. Optional: [ImHex](https://imhex.werwolv.net/) or any hex editor
 
 </details>
@@ -107,10 +107,8 @@ This project primarily targets overworld (`ymu/`) models and animations from FE9
 Detailed workflows and tutorials are available in [docs/](docs/).
 
 Recommended starting points:
-- Beginner Workflow
-- Animation Editing
-- Texture Workflow
-- Troubleshooting ??
+- [Standard Workflow](docs/standard-workflow.md)
+- Youtube Playlist: Tellius Forge Tutorials
 
 ## Credits
     
