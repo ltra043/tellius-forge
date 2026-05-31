@@ -1,8 +1,8 @@
 # Animation Workflow (.ga)
 
-**Written for Plugin Version:** v0.27.1
+**Written for Plugin Version:** v0.27.1  
 **For:** Blender 4.2–5.0 (tested on 5.0; minimum set to 4.2)  
-**Covers:** Blender animation import, editing, creation, retargeting, and export
+**Covers:** Blender animation import, editing, creation, retargeting, and export  
 
 ---
 ## Videos
