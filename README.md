@@ -27,7 +27,8 @@ A repository containing reverse-engineered research, documentation, and Blender 
 Detailed workflows and tutorials are available in [docs/](docs/).
 
 Recommended starting points for new users:
-- [Standard Workflow](docs/standard-workflow.md)
+- [./docs/readme.md](./docs/README.md)
+- [Getting Started](./docs/getting-started.md)
 - Youtube Playlist: [Tellius Forge Tutorials](https://youtube.com/playlist?list=PL650N9tNdfYazuxS5b63BzaUKxZLErT0e)
 
 ## Compatibility & Limitations
