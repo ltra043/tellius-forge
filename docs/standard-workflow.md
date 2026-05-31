@@ -1,4 +1,4 @@
-# Tellius Forge — Practical Guide
+# Tellius Forge - Standard Workflow
 
 **Version:** v0.27.1
 **For:** Blender 4.2–5.0 (tested on 5.0; minimum set to 4.2)  
@@ -87,7 +87,6 @@ Navigate to the model's folder (e.g., `ymu/pegasus/pack/`) and select `body.gs`.
 7. Delete all unwanted bones.
 
 
-
 ### 4d. Combine Armatures
 The goal is to have one armature and multiple meshes parented to it.  
 **Do NOT use Ctrl+J (Join) on mesh files** — keep meshes as separate objects.
@@ -147,9 +146,9 @@ The goal is to have one armature and multiple meshes parented to it.
 ## 5. Post-Blender Updates
 
 1. Import any added textures to your model's tpl files using BrawlCrate.
-2. Finalize material/texture data using the tool [gs-texture-edits.exe](../tools/gs-texture-edits.exe)
-3. If your skeleton was exported using **Blender Hierarchy** bone order, update animations using the tool [ga-simple-edits.exe](../tools/ga-simple-edits).
->- Note: You must keep `../tools/ga-simple-edits/ga-simple-edits.exe` and `../tools/ga-simple-edits/assets` in the same directory for the executable to function.
+2. Finalize material/texture data using the tool [gs-texture-edits.py](../tools/body/gs-texture-edits.py)
+3. If your skeleton was exported using **Blender Hierarchy** bone order, update animations using the tool [ga-simple-edits](../tools/animation/ga-simple-edits).
+>- Note: You must keep `../tools/ga-simple-edits/ga-simple-edits.py` and `../tools/ga-simple-edits/assets` in the same directory for the executable to function.
 
 
 ## 6. Animation Workflow (.ga)
