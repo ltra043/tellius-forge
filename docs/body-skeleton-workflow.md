@@ -6,8 +6,8 @@
 
 ---
 ## Videos
-- In Blender: [Body & Skeleton Edits](https://youtu.be/eqpfvmXnQCA)
-- Outside Blender: Texture and Simple Animation Edits(TODO)
+- In Blender: [Body & Skeleton Editing](https://youtu.be/eqpfvmXnQCA)
+- Outside Blender:  [Texture & Animation Setup](https://youtu.be/TF_WvlbTA4Q)
 
 ---
 

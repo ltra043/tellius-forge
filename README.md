@@ -1,6 +1,6 @@
 
 <p align="center">
-  <img src="images/ui/icon.svg" alt="Tellius Forge Logo" width="64"/>
+  <img src="images/ui/icon.svg" alt="Tellius Forge Logo" width="112"/>
 </p>
 
 <h1 align="center">Tellius Forge</h1>
@@ -18,16 +18,18 @@ A repository containing reverse-engineered research, documentation, and Blender 
 - Import FE9/FE10 bodies, skeletons, and animations
 - Export FE9/FE10 bodies, skeletons, and animations
 - Edit FE9/FE10 bodies, skeletons, textures, and animations
+- Retarget animations between compatible models
 - Create custom animations
 - Rename and modify skeleton bones
-- Reverse-engineered format documentation and research
+- Reverse-engineered file format documentation and research
 
 ## Documentation
 
 Detailed workflows and tutorials are available in [docs/](docs/).
 
 Recommended starting points for new users:
-- [Standard Workflow](docs/standard-workflow.md)
+- [./docs/readme.md](./docs/README.md)
+- [Getting Started](./docs/getting-started.md)
 - Youtube Playlist: [Tellius Forge Tutorials](https://youtube.com/playlist?list=PL650N9tNdfYazuxS5b63BzaUKxZLErT0e)
 
 ## Compatibility & Limitations
@@ -66,7 +68,7 @@ This project primarily targets overworld (`ymu/`) models and animations from FE9
 2. [Latest release](https://github.com/ltra043/tellius-forge/releases/latest). Source code also available in [plugin/](./plugin/tellius-forge.py) and [tools/](./tools/)
 3. [BrawlCrate](https://github.com/soopercool101/BrawlCrate)
 4. [Lumina](https://github.com/thane98/lumina) by thane98
-5. Additional python scripts in [tools/](tools/). Necessary tools will be available as executables in [Releases](releases/)
+5. Additional python scripts in [tools/](tools/). Necessary tools will be available as executables through [Releases](https://github.com/ltra043/tellius-forge/releases)
 6. Optional: [ImHex](https://imhex.werwolv.net/) or any hex editor
 
 </details>
@@ -119,3 +121,21 @@ The goal of this license is to ensure future forks and derivative tools remain o
 This repository does not contain copyrighted Nintendo or Intelligent Systems assets.
 
 Users are expected to legally obtain their own game files.
+
+## Related Search Terms
+<details>
+  <summary>Click to Expand</summary>
+  Fire Emblem Path of Radiance (FE9), Fire Emblem Radiant Dawn (FE10), Tellius, Tellius modding, Tellius asset editing, 
+  
+  model editing, animation editing, Blender, Blender importer/exporter, skeleton editing, animation retargeting, 3D Modeling, 3D Models
+
+  GameCube reverse engineering, Wii reverse engineering, game asset research, file format documentation, file format reverse engineering, 3D model formats, animation formats, asset extraction, asset import/export.
+
+  Japanese:
+  ファイアーエムブレム 蒼炎の軌跡,
+  ファイアーエムブレム 暁の女神,
+  蒼炎の軌跡 改造,
+  暁の女神 改造,
+  モデル編集,
+  モーション編集
+  </details>
