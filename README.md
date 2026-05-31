@@ -1,6 +1,6 @@
 
 <p align="center">
-  <img src="images/ui/icon.svg" alt="Tellius Forge Logo" width="64"/>
+  <img src="images/ui/icon.svg" alt="Tellius Forge Logo" width="112"/>
 </p>
 
 <h1 align="center">Tellius Forge</h1>
