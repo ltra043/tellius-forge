@@ -24,6 +24,7 @@ Typically requires minor blender edits to fix.
 
 <details>
 <summary><b>Less Compatible:</b></summary>
+  
 May require major blender edits or modified animations.
 - **FE9:** sworder, pegasu, pegasu2, sworder2, barbarian, soldierf
 - **FE10:** knight3_m, cleric2, tibarn, hoodceph, learne, priest3_o, mage2_t_p, priest3_l, rafiel, cepheran, priest3_f, thief2_h, nasir, priest3_b, soldier3_bl, soldier3_u, rieusion, priest2_f, priest1, chap, dra_r, dra_w, hoodrethe, knight3_o, priest3_k, priest3_h, degin, armor2_ga, knight3_l, ena, bea_ca, mika2_rafi, dra_g, bird_he_ra, soldier1, armor_2_ta, hoodmist, lord, child_aik, child_boy, hoodklt, hoodlening, olugh, lay, jill, bea_wo_n, bea_wo_o, spirit, aura
