@@ -25,7 +25,7 @@ by Jade (ltra043)
 7. [g-analyzer.py](.../tools/skeleton/g-analyzer.py): parses skeleton data and creates detailed summary
 8. [How to port and edit ymu animation files - guide](https://docs.google.com/document/d/1oIBy46jQPswIIK-ls6cR9AbOMlFR7gbLdcyi7juQHbc/edit?usp=sharing)
 
----
+
 ## Research Status
 
 **Legend:**
@@ -45,7 +45,7 @@ by Jade (ltra043)
 The following observations are based on comparison of `ymu` animations. They might not be true for EVERY animation. 
   - The format is likely similar for `zu` animations.
   - Effect animations in `yme` have much more data present. The format is the same until the Footer Data section. 
----
+
 ## General Structure & Brief Overview
 
 There are 4 main sections and 1 optional section to every .ga file in the ymu folder. 
@@ -98,12 +98,11 @@ Other Notes:
   * **Footer Data 1:** *Damage & Effect timing.* Functions similarly in FE9 and FE10  
   * **Footer Data 2:** *Controls visibility.* Only present in some FE10 animations. Makes parts of the skeleton (usually unequipped weapons) invisible for all or part of the animation duration. 
 
----
+
 
 
 ## Detailed Overview
 
-<hr style="height:1px" />
 
 ### Organization / File Info
 
@@ -165,7 +164,7 @@ Bytes 0x20 - 0x2f. Gives the **start address of each main data section:** Bone T
     * **Channel Data size** is equal to the **product** of `[number of Channel Data entries]` and `[0x0c bytes per entry]`   
     * *Number of Channel Data entries* is established in the Bone Table
 
-<hr style="height:1px" />
+---
 
 ### Bone Table
 
@@ -219,7 +218,7 @@ Ties bones from the skeleton.g file to sections of data in the Channel Data sect
   * Tells how many entries in Channel Data are associated with the bone ID in the same Table row  
   * Common values: `01`, `03`, `04`, `05`, `06`, `09`
 
-<hr style="height:1px" />
+---
 
 ### Channel Data
 
@@ -262,7 +261,7 @@ The number of entries is defined in the Bone Table.
 * Bytes 0x08 - 0x0b *(purple)*: **index of starting keyframe** in F-Curve Data  
   * Index of the first entry is `0x00`
 
-<hr style="height:1px" />
+---
 
 ### F-Curve Data
 
@@ -277,7 +276,7 @@ Consists of **pairs of (frame, transform value)**, which build an animation data
 
 >Note: the game reads bytes 0x00-0x01 as a 2-byte value representing frame. Functionally, the first byte is always `0x00` because there are no animations long enough to require values > `0xFF`. 
 
-<hr style="height:1px" />
+---
 
 ### Footer Data
 
