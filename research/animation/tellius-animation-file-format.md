@@ -343,28 +343,30 @@ FE10 has 4 possible combinations.
   Other Bookmarks: See <a href="#footer-data-2">Footer Data 2</a> below</em>
 </p>
 
-
+**Identiying Footer Pointer 1 and 2**
 * The pointer in File bytes 0x00 - 0x03 points to 0x0c bytes before the end of the file.   
   * The 4-byte pointer target has a value of either 0x00 or 0x05  
-  * This value can serve as an identifier for a Footer Data sub-section  
-  * If the value is 0x05, the next 4 bytes is a pointer to Footer Data 1  
-  * If the value is 0x00, the next 4 bytes is a pointer to Footer Data 2  
-* If there is only one Footer Data sub-section present  
-  * Footer Pointer(s) is 0x0c bytes long. It consists of the Footer Identifier, a 4-byte Footer Pointer (1 or 2), and 4 bytes of 00  
-  * The present Footer Data sub-section (1 or 2) starts at the value of the Footer Pointer (1 or 2) and ends at the Footer Identifier   
-* If both Footer Data sub-sections are present (see *Image 5,* above):  
-  * Footer Pointer(s) is 24 (or 0x18) bytes long  
-  * Footer Pointer(s) contains 3 pointers and 2 pointer-identifiers  
-  * The order of Footer Pointer data is: Footer Identifier 1, Footer Pointer 1, 4 bytes 00, Footer Identifier 2, Footer Pointer 2, Footer Pointer 3   
-  * The first File pointer at 0x00 still points to 0x0c bytes before the end of the file  
-    * The pointer target is the 4-byte Footer Identifier 2 with a value of 0x00  
-  * Footer Pointer 2 points to the start of Footer Data 2.   
-    * In *Image 5*, Footer Pointer 2 has a value 0x5ecc  
-  * Footer Pointer 3 points to Footer Identifier 1 (which has a value of 0x05)  
-    * The target of Footer Pointer 3 is typically 24 (or 0x18) bytes before the end of the file  
-    * In *Image 5*, Footer Pointer 3 has a value 0x5f00  
-  * The 4 bytes after Footer Identifier 1 is Footer Pointer 1. It points to the start of Footer Data 1  
-    * In *Image 5*, Footer Pointer 1 has a value 0x5e68
+  * This value can serve as an identifier for a Footer Data sub-section  (**Footer ID**)
+  * If the value is `0x05`, the next 4 bytes is a pointer to **Footer Data 1**  
+  * If the value is `0x00`, the next 4 bytes is a pointer to **Footer Data 2**  
+  
+**If only one one Footer Data sub-section present:** 
+* **Footer Pointer(s)** is 0x0c bytes long. It consists of the **Footer Identifier**, a 4-byte **Footer Pointer** (1 or 2), and 4 bytes of `0x00`  
+* The present Footer Data sub-section (1 or 2) starts at the value of the Footer Pointer (1 or 2) and ends at the Footer Identifier 
+
+**If both Footer Data sub-sections are present** (see *Image 5,* above):  
+* Footer Pointer(s) is 24 (0x18) bytes long  
+* Footer Pointer(s) contains **3 pointers** and **2 pointer-identifiers**  
+* The order of Footer Pointer data is: Footer Identifier 1, Footer Pointer 1, 4 bytes 00, Footer Identifier 2, Footer Pointer 2, Footer Pointer 3
+* The header pointer at File Info [0x00-0x03] still points to 0x0c bytes before the end of the file  
+  * The **pointer target** is the 4-byte **Footer Identifier 2** with a value of `0x00`  
+* **Footer Pointer 2** points to the **start of Footer Data 2**.   
+  * In *Image 5*, Footer Pointer 2 has a value `0x5ecc`  
+* **Footer Pointer 3** points to **Footer Identifier 1** (which has a value of `0x05`)  
+  * The target of Footer Pointer 3 is typically 24 (or 0x18) bytes before the end of the file  
+  * In *Image 5*, Footer Pointer 3 has a value `0x5f00`  
+* The 4 bytes after Footer Identifier 1 is **Footer Pointer 1**. It points to the **start of Footer Data 1**  
+  * In *Image 5*, Footer Pointer 1 has a value `0x5e68`
 
 #### Footer Data 1
 
