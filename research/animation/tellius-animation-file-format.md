@@ -308,7 +308,7 @@ FE9 has either no Footer Data or Footer Data 1 + Footer Pointer(s)
 * If the file’s bytes 0x00 - 0x03 has any **non-zero value**, there is **one Footer Pointer and Footer Data 1**  
   * The **header pointer** in bytes 0x00 - 0x03 **points directly to Footer Pointer(s)**.   
   * For FE9, Footer Pointer(s) contains a single 4-byte pointer that I call **Footer Pointer 1**. It is followed by 36 or 0x24 bytes of `0x00`
-    > [!NOTE]
+
     > These 0x24 bytes are not always `0x00` in animations outside the `ymu/`. For example, effect animations in `yme/` often have additional pointers in this section.
 
   * **Footer Pointer 1** points to the start of Footer Data 1  
@@ -402,8 +402,8 @@ Footer Data 1 Entry Composition:
   * Byte 0x01  *(blue)*: **frame**  
     * The frames used must be within the animation playback range of [start - end frame]. These values are defined at File Info bytes 0x17 and 0x1b  
   * The exact function of the remaining data is unknown.   
-  * FE10 entries may have 2 extra bytes of 00 at the end of each entry compared to FE9  
->[!NOTE]
+  * FE10 entries may have 2 extra bytes of 00 at the end of each entry compared to FE9
+  * 
 >At least one entry handles damage display. The start/end frames are limited by the frame assigned for the damage display.   
 >  * The first animation frame (File Info bytes 0x14-0x17) must be smaller than the damage display frame.   
 >  * The last animation frame (File Info bytes 0x18-0x1b) must be larger than the damage display frame.   
