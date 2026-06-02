@@ -1,15 +1,40 @@
-# Full Asset Format Reference
+# Tellius Skeleton File Format
 
 **Date:** 2026-06-01  
 **Scope:** Full format outline for `.g` (skeleton) files. See `body.md` and `animation.md` for `.gs` and `.ga` formats.
 
-All multi-byte integers and floats are **big-endian** unless noted otherwise.
+<details>
+<summary>Keywords</summary>
 
-**All listed offsets and size values are decimal values** unless prefixed with `0x` to indicate a hex value.
+Fire Emblem skeleton format, Fire Emblem model format, FE9 skeleton format, FE10 skeleton format, FE9 model format, FE10 model format, Path of Radiance skeleton, Radiant Dawn skeleton, Path of Radiance models, Radiant Dawn models, Tellius skeleton research, .g format, GameCube skeleton format, Wii skeleton format, GameCube model format, Wii model format, reverse engineering, file format documentation, skeleton animation data, skeleton reverse engineering, GameCube rigging, Wii rigging, game asset research, 3D model format, Nintendo GameCube modding, Nintendo Wii modding, GameCube Modding, GC Modding, GC/Wii Modding
+
+</details>
+
+### General Info & Navigation
+- All multi-byte integers and floats are **big-endian** unless noted otherwise.
+- **All listed offsets and size values are decimal values** unless prefixed with `0x` to indicate a hex value.
+
+<details>
+<summary>Navigation</summary>
+
+1. [File Header](#1-file-header)
+2. [](#2-)
+3. [](#3-)
+4. [](#4-)
+5. [](#5-)
+6. [](#6-)
+7. [](#7-)
+8. [](#8-)
+9. [](#9-)
+10. [](#10-)
+
+
+</details>
 
 ---
 
-## 1. File Header (16 bytes)
+## 1. File Header 
+Size: 16 bytes
 
 | Offset | Type | Field | Notes |
 |--------|------|-------|-------|
@@ -96,12 +121,12 @@ The 32-bit `flags` field at `+12` is an **Intelligent Systems-proprietary bitfie
 ### 3.1 Proposed Bit Layout
 
 ```
-+------+------+------+------+------+------+------+------+
-| 31-18| 17-12| 11-9 |  8   |  7   |  6   |  5   | 4-0  |
-+------+------+------+------+------+------+------+------+
-|Extended|Unused|Extra |ClassA|ClassA|Load |Store|Opcode|
++--------+------+------+-------+------+------+------+------+
+| 31-18  | 17-12| 11-9 |   8   |  7   |  6   |  5   | 4-0  |
++--------+------+------+-------+------+------+------+------+
+|Extended|Unused|Extra |ClassA |ClassA|Load  |Store |Opcode|
 | flags  |      |Flags |(0x100)|(0x80)|(0x40)|(0x20)|(0x1F)|
-+------+------+------+------+------+------+------+------+
++--------+------+------+-------+------+------+------+------+
 ```
 
 | Bits | Mask  | Label | Interpretation |
@@ -177,7 +202,7 @@ Both classes can have animation data in `.ga` files. The distinction is about ho
 
 ### 3.4 NSBMD SBC Parallel
 
-The remainder of *Section 3* is relevant or understanding how bones interact with animation data. 
+The remainder of *Section 3* is relevant for understanding how bones interact with animation data. 
 
 Skip to [*Section 4*](#4-position-and-world-space-accumulation) to understand how bone position is determined. Or skip to [*Section 6*](#6-string-pool-format) to learn about the String Pool, which is the last part of skeleton files.
 
