@@ -9,15 +9,23 @@ Documents are organized by asset type.
 ---
 
 ## Available Documents
-**Status meanings:**
+
+<details>
+<summary><b>Status meanings:</b></summary>
+
 - **Complete:** Major findings verified through testing and considered stable.
 - **Finalized:** Research is considered complete, though some conclusions rely on strong evidence rather than exhaustive testing.
 - **Active Research:** Substantial findings available but some areas remain under investigation.
 - **Preliminary:** Early findings with limited validation or sample coverage.
 
+</details>
+<br>
+
 | Document | Asset | Status | Purpose |
 |-----------|----|----|---------|
 | [Tellius Animation File Format](./animation/tellius-animation-file-format.md) | animation | Complete | Reverse-engineered documentation of overworld `ymu` animation (`.ga`) files used by FE9 and FE10. |
+| [Tellius Skeleton File Format](./skeleton/tellius-skeleton-file-format.md) | skeleton | Active Research | Reverse-engineered documentation of overworld `ymu` skeleton (`.g`) files used by FE9 and FE10. |
+| [Tellius Body File Format](./skeleton/tellius-body-file-format.md) | body | Active Research | Reverse-engineered documentation of overworld `ymu` body (`.gs`) files used by FE9 and FE10. |
 | [FE9 Skeleton Flags](./skeleton/fe9-skeleton-flags.md) | skeleton | Finalized | Analysis of FE9 skeleton bone flags and Blender animation compatibility. |
 | [FE10 Skeleton Flags](./skeleton/fe10-skeleton-flags.md) | skeleton | Preliminary | Analysis of FE10 skeleton bone flags and Blender animation compatibility. |
 |  |  |  |  |
