@@ -188,14 +188,16 @@ The 32-bit `flags` field at `+12` is an **Intelligent Systems-proprietary bitfie
 | 6    | 0x40  | Load   | If set: **load** a matrix from stack before the multiply (analogous to NSBMD SBC bit 6). |
 | 7    | 0x80  | ClassA1 | Class A indicator (see §5). Nearly always paired with bit 8. |
 | 8    | 0x100 | ClassA2 | Class A indicator. Nearly always paired with bit 7. |
-| 9-11 | —     | Extra   | Higher flags seen on some FE9 bones; more common in FE10 (Wii extras). |
-| 12-17| —     | Unused  | Not observed in any known skeleton. |
-| 18+  | —     | Extended| Rare Wii-specific bits (e.g., 0x401AC, 0x407BC in FE10 only). |
+| 9-11 | -     | Extra   | Higher flags seen on some FE9 bones; more common in FE10 (Wii extras). |
+| 12-17| -     | Unused  | Not observed in any known skeleton. |
+| 18+  | -     | Extended| Rare Wii-specific bits (e.g., 0x401AC, 0x407BC in FE10 only). |
 
 **The names and semantics in this table are our best interpretation and are speculative.** The operation-codes and stack flags are inferred from hierarchy patterns and the NSBMD SBC precedent, but have not been verified against the actual game engine.
 
 ### 4.2 Class A vs Class B
-Bones can be broadly sorted into two categories: Class A (World Position) and Class B (Local Transorm). These classifications are based primarily on observed flag patterns and how position data is stored within the skeleton. Class B bones exhibit more variation than Class A bones, and aspects of their position and animation behavior remain only partially understood.
+Bones can be broadly sorted into two categories: **Class A (World Position)** and **Class B (Local Transorm)**. These classifications are based primarily on observed flag patterns and how position data is stored within the skeleton. 
+
+Class B bones exhibit more variation than Class A bones, and aspects of their position and animation behavior remain only partially understood.
 
 The primary class division is determined by **bits 7-8** (`flags & 0x180`):
 
@@ -251,13 +253,13 @@ Both classes can have animation data in `.ga` files. The distinction is about ho
 | `0x7BC` | Bits 10+9+8+7 set. |
 | `0x401AC`, `0x407BC` | Bit 18 set — Wii extension beyond the GameCube flag range. |
 
-**All proposed purpose labels (e.g., "solver," "terminal chain," "variant") are inferred guesses based on hierarchy position and bone naming conventions.** They have not been verified by static analysis of the game's executable.
+**All proposed purpose labels (e.g., "solver," "terminal chain," "variant") are inferred guesses based on hierarchy position and bone naming conventions.** They have not been verified by analysis of the game's executable.
 
 ### 4.4 NSBMD SBC Parallel
 
-The remainder of *Section 3* is relevant for understanding how bones interact with animation data. 
-
-Skip to [*Section 5*](#5-position-and-world-space-accumulation) to understand how bone position is determined. Or skip to [*Section 6*](#6-string-pool-format) to learn about the String Pool, which is the last part of skeleton files.
+>The remainder of *Section 3* is relevant for understanding how bones interact with animation data. 
+>
+>Skip to [*Section 5*](#5-position-and-world-space-accumulation) to understand how bone position is determined. Or skip to [*Section 6*](#6-string-pool-format) to learn about the String Pool, which is the last part of a skeleton file.
 
 The **store bit (bit 5)** and **load bit (bit 6)** map directly to the NSBMD SBC modifier bits for the `NODEDESC` (0x06) command:
 
@@ -367,7 +369,7 @@ The **pose transform** (applied as Blender pose bone location + rotation) captur
 | Class B | Zero | Zero (rotation is part of the bone's local transform) |
 | Class A with indirect (non-direct) B parent | Negated sum of ancestors' pose locations | Combined rotation from B ancestors |
 
-**Animation of Class B bones** remains partially unresolved. The skeleton stores local transforms (p88 + p100) at rest pose, and animation `.ga` files store deltas to these values. The current plugin applies animation to pose bone transform channels, which produces visually correct results for most cases, but the exact way the game engine combines skeleton rest data with animation keyframes for Class B bones has not been fully reverse-engineered.
+**Animation of Class B bones** remains partially unresolved. The skeleton stores local transforms (p88 + p100) at rest pose, and animation `.ga` files store deltas to these values. The current plugin applies animation to pose bone transform channels, which produces visually correct results for some cases, but the exact way the game engine combines skeleton rest and pose data with animation keyframes for Class B bones has not been fully reverse-engineered.
 
 ---
 
