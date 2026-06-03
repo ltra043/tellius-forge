@@ -1,9 +1,12 @@
 
 <h1 align="center">Tellius Animation File Format</h1>
 
-**Last Updated:** 2026-06-01 
-**Author:** Jade (ltra043) 
-**Scope:** Reverse-engineering notes on the format of Fire Emblem 9 and Fire Emblem 10 animation (`.ga`) files. See [Tellius Body File Format](../body/tellius-body-file-format.md) and [Tellius Skeleton File Format](../skeleton/tellius-skeleton-file-format.md) for analysis of other asset formats.
+<p align="center"><i>
+Reverse-engineering notes on the format of Fire Emblem 9 and Fire Emblem 10 animation (<code>.ga</code>) files. <br>
+See <a href="../body/tellius-body-file-format.md">Tellius Body File Format</a> and <a href= "../skeleton/tellius-skeleton-file-format.md">Tellius Skeleton File Format</a> for analysis of other asset formats.</i><br><br>
+<b>Author:</b> Jade (ltra043)<br>
+<b>Last Updated:</b> 2026-06-01  
+</p>
 
 <details>
 <summary>Keywords</summary>
@@ -13,14 +16,13 @@
 </details>
 
 
-## General Info & Navigation
+## Reader Information
 - All multi-byte integers and floats are **big-endian** unless noted otherwise.
 - **All listed offsets and size values are decimal values** unless prefixed with `0x` to indicate it is a hex value.
 
 <details>
-<summary><b>Navigation</b></summary>
-
-
+<summary><b>Table of Contents</b></summary>
+ 
 1. **[General Structure & Brief Overview](#1-general-structure--brief-overview)**
 2. **Detailed Overview**
     - [2a. File Info](#2a-file-info)
@@ -50,7 +52,7 @@
 
 ## Research Status
 **Testing Scope:**
-The following observations are based on comparison of `ymu` animations. They might not be true for EVERY animation. 
+The following observations are primarily based on comparison of `ymu` animations. They might not be true for EVERY animation. 
   - The format is likely similar for `zu` animations.
   - Effect animations in `yme` have much more data present. The format is the same until the Footer Data section. 
 
