@@ -1,10 +1,12 @@
-# Tellius Skeleton File Format
+<h1 align="center">Tellius Skeleton File Format</h1>
 
-**Last Updated:** 2026-06-01
-**Author:** Jade (ltra043)  
-**Scope:** Reverse-engineering notes on the format of Fire Emblem 9 and Fire Emblem 10 skeleton (`.g`) files. See [Tellius Body File Format](../body/tellius-body-file-format.md) and [Tellius Animation File Format](../animation/tellius-animation-file-format.md) for analysis of other asset formats.
-
-
+<p align="center"><i>
+Reverse-engineering notes on the format of Fire Emblem 9 and Fire Emblem 10 skeleton (`.g`) files.<br>
+See <a href="../body/tellius-body-file-format.md">Tellius Body File Format</a> and <a href="../animation/tellius-animation-file-format.md">Tellius Animation File Format</a> for analysis of other asset formats.</i><br><br>
+<b>Author:</b> Jade (ltra043)<br>
+<b>Last Updated:</b> 2026-06-01
+</p>
+  
 <details>
 <summary>Keywords</summary>
 
@@ -12,21 +14,21 @@ Fire Emblem assets, Fire Emblem model format, FE9 skeleton format, FE10 skeleton
 
 </details>
 
-## General Info & Navigation
+## Reader Information
 - All multi-byte integers and floats are **big-endian** unless noted otherwise.
 - **All listed offsets and size values are decimal values** unless prefixed with `0x` to indicate it is a hex value.
 
 <details>
-<summary><b>Navigation</b></summary>
+<summary><b>Table of Contents</b></summary>
 
-1. [File Header](#1-file-header)
-2. [Bone Record Format](#2-bone-record-format)
-3. [Bone Flag System](#3-bone-flag-system)
-4. [Position and World-Space Accumulation](#4-position-and-world-space-accumulation)
-5. [String Pool Format](#5-string-pool-format)
-6. [Bone Naming Conventions](#6-bone-naming-conventions)
-7. [Notable Gaps in .gs Understanding](#7-notable-gaps-in-gs-understanding)
-8. [Summary of Skeleton File Layout](#8-summary-of-skeleton-file-layout)
+1. [Summary of Skeleton File Layout](#1-summary-of-skeleton-file-layout)
+2. [File Header](#2-file-header)
+3. [Bone Record Format](#3-bone-record-format)
+4. [Bone Flag System](#4-bone-flag-system)
+5. [Position and World-Space Accumulation](#5-position-and-world-space-accumulation)
+6. [String Pool Format](#6-string-pool-format)
+7. [Bone Naming Conventions](#7-bone-naming-conventions)
+8. [Remaining Unknowns](#8-remaining-unknowns)
 
 </details>
 
@@ -34,7 +36,7 @@ Fire Emblem assets, Fire Emblem model format, FE9 skeleton format, FE10 skeleton
 <details>
 <summary><b>Additional Resources</b></summary>
 
-1. FE10 [ImHex bookmarks](https://drive.google.com/file/d/1wBQgxkHshERlykjIj5WD58jmAeRpy2Wl/view?usp=drive_link) for fe10 `fighter3_n’s skeleton.g`  
+1. [FE10 ImHex bookmarks](https://drive.google.com/file/d/1wBQgxkHshERlykjIj5WD58jmAeRpy2Wl/view?usp=drive_link) for fe10 `fighter3_n’s skeleton.g`  
 2. [Skeleton file viewer](https://docs.google.com/spreadsheets/d/1zbN7nSeyl0lY_XA7-t0zFUdaRjoDEF3c_laifMrM5Pc/edit?gid=1433193727#gid=1433193727&range=A1) : spreadsheet that parses and organizes skeleton data
 3. [g-analyzer.py](../../tools/skeleton/g-analyzer.py): parses skeleton data and creates detailed summary
 4. [Tellius Forge Blender plugin](https://github.com/ltra043/tellius-forge/releases/latest): suuports import, modification, and export of FE9/FE10 skeleton files.
@@ -45,7 +47,7 @@ Fire Emblem assets, Fire Emblem model format, FE9 skeleton format, FE10 skeleton
 ## Research Status
 
 **Testing Scope:**
-The following observations are based on comparison of `ymu` skeletons. They might not be true for EVERY skeleton. 
+The following observations are primarily based on comparison of `ymu` skeletons. They might not be true for EVERY skeleton. 
 
 Information related to bone rotation and location is more strongly documented than information related to scale. We believe scale is not often modified via skeleton data, so it is difficult to draw conclusions related to scale from skeleton data alone.
 
@@ -68,7 +70,21 @@ Information related to bone rotation and location is more strongly documented th
 
 ---
 
-## 1. File Header 
+## 1. Overall Skeleton File Layout
+
+|Offset | Content |
+|-------|---------|  
+`0x00` | **Header** (16 bytes): reserved, string_pool_offset, bone_count, `0x10` |
+`0x10` | Bone record 0 (244 bytes) |
+`0x104` | Bone record 1 (244 bytes) |
+...  | Remaining bone records |
+`0x10 + n*0xF4`  | **String pool:** `[unknown]\0name0\0name1\0...\0`  |
+
+
+Total file size = `0x10 + bone_count * 0xF4 + string_pool_size`.
+---
+
+## 2. File Header 
 **Size:** 16 bytes / 0x10 bytes
 
 | Offset | Type | Field | Notes |
@@ -82,7 +98,7 @@ Bone records follow contiguously from `0x10` onward. Record stride = `0xF4` (244
 
 ---
 
-## 2. Bone Record Format 
+## 3. Bone Record Format 
 **Size:** 244 bytes / 0xF4 bytes
 
 | Offset | Size | Type | Field | Notes |
@@ -90,15 +106,15 @@ Bone records follow contiguously from `0x10` onward. Record stride = `0xF4` (244
 | `+0`   | 4    | int32   | parent_index     | `-1` = root bone. |
 | `+4`   | 4    | int32   | next_sibling     | Index of next sibling, `-1` = last child of parent. |
 | `+8`   | 4    | int32   | first_child      | Index of first child, `-1` = leaf bone. |
-| `+12`  | 4    | uint32  | flags            | IS-proprietary bitfield (see §3 below). |
-| `+16`  | 64   | f32×16  | bind matrix      | 4×4 column-major matrix. Class A: identity-like (last 3 diag entries = 1.0, rest ≈ 0). Class B: inverse-bind matrix, column 3 = negated world position of bone. See §2.2 below for what this means in plain terms. |
+| `+12`  | 4    | uint32  | flags            | IS-proprietary bitfield (see §4 below). |
+| `+16`  | 64   | f32×16  | bind matrix      | 4×4 column-major matrix. Class A: identity-like (last 3 diag entries = 1.0, rest ≈ 0). Class B: inverse-bind matrix, column 3 = negated world position of bone. See §3.2 below for what this means in plain terms. |
 | `+80`  | 8    | f32×2   | reserved         | Always zero in tested files. Purpose unknown. |
 | `+88`  | 12   | f32×3   | local_translation | Class B only: local XYZ offset from nearest Class B ancestor, expressed in that ancestor's local frame. Class A: all zeros. |
 | `+100` | 12   | f32×3   | local_rotation_deg | Class B only: XYZ Euler rotation angles in **degrees**. Used to build the 3×3 rotation matrix `R = Rz * Ry * Rx`. Class A: all zeros. |
 | `+112` | 12   | f32×3   | position         | Class A: bone head world-space position. Class B: all zeros. For Class A children of Class B bones, this is a local offset from the parent chain's anchor (not absolute world space). |
 | `+124` | 12   | f32×3   | position_dup     | Always identical to `+112`. Presumably a copy for alignment or caching. |
 | `+136` | 52   | f32×13  | reserved         | Zero in all tested bones. |
-| `+188` | 48   | f32×12  | pre-computed_3×4_local_transform | See §2.1 below. |
+| `+188` | 48   | f32×12  | pre-computed_3×4_local_transform | See §3.1 below. |
 
 ### Per-bone footer (last 8 bytes of the 244-byte record):
 
@@ -108,7 +124,7 @@ Bone records follow contiguously from `0x10` onward. Record stride = `0xF4` (244
 | `+238` | 2    | uint16 | constant     | Always `0x0001` in all observed skeletons. If the two footer uint16s at `+236`/`+238` are read together as one big-endian uint32, the value is `(bone_index << 16) \| 1`. This packed form may be how the game engine indexes bones, but it is unconfirmed. |
 | `+240` | 4    | uint32 | name_offset  | Byte offset of this bone's null-terminated ASCII name within the string pool, relative to pool start. |
 
-### 2.1 Pre-computed 3×4 Local-Transform Matrix
+### 3.1 Pre-computed 3×4 Local-Transform Matrix
 
 The 12 floats at `+188` through `+235` form a 3×4 transformation matrix (3 rows × 4 columns):
 
@@ -136,25 +152,25 @@ Matrix layout (row-major storage within the 12-float block):
 For Class A bones with zero rotation, this reduces to the identity 3×3 with location = `position`.  
 For Class B bones, the rotation columns are populated and location = `local_translation`.
 
-### 2.2 What Is the Bind Matrix?
+### 3.2 What Is the Bind Matrix?
 
 Skinned character meshes are modeled in a neutral pose called "bind pose." Each vertex stores which bone influences it, with positions measured relative to that bone's local frame in bind pose.
 
 At runtime the game must transform each vertex from bind-pose space into the bone's current animated world position. The bind matrix is the pre-computed inverse of the bone's rest-pose world matrix. It undoes the rest-pose transform so animation data can move the vertex from there.
 
 Numerically:
-- **Class A**: Bind matrix is identity-like. Class A bones have no accumulated rotation in the skeleton, so the rest transform is just a location offset (a translocation). The inverse of a pure translocation is trivial (negate the offset), which equals column 3 of the inverse-bind matrix.
+- **Class A**: Bind matrix is identity-like. Class A bones have no accumulated rotation in the skeleton, so the rest transform is just a location offset (a translation). The inverse of a pure translation is trivial (negate the offset), which equals column 3 of the inverse-bind matrix.
 - **Class B**: The 3x3 portion is the inverse of the bone's accumulated rotation. Column 3 (the location column) stores the negated world-space position of the bone head.
 
 The plugin preserves this matrix verbatim from the original file on import and writes it back unchanged on export. You do not need to modify it for model editing.
 
 ---
 
-## 3. Bone Flag System
+## 4. Bone Flag System
 
 The 32-bit `flags` field at `+12` is an **Intelligent Systems-proprietary bitfield**. It is NOT a standard Nintendo format (not J3D, not G3D MDL0, not NSBMD SBC), though it shares **conceptual DNA** with NSBMD SBC (the skeleton/scene-graph bytecode format used in Nintendo DS model files, publicly documented on GBATEK), but it is not a copy of any known Nintendo format.
 
-### 3.1 Proposed Bit Layout
+### 4.1 Proposed Bit Layout
 
 ```
 +--------+------+------+-------+------+------+------+------+
@@ -167,10 +183,10 @@ The 32-bit `flags` field at `+12` is an **Intelligent Systems-proprietary bitfie
 
 | Bits | Mask  | Label | Interpretation |
 |------|-------|-------|----------------|
-| 4-0  | 0x1F  | Opcode | Low-level matrix operation this bone performs. See §3.3 below. |
+| 4-0  | 0x1F  | Opcode | Low-level matrix operation this bone performs. See §4.3 below. |
 | 5    | 0x20  | Store  | If set: compute matrix then **store** result to a stack slot (analogous to NSBMD SBC bit 5). |
 | 6    | 0x40  | Load   | If set: **load** a matrix from stack before the multiply (analogous to NSBMD SBC bit 6). |
-| 7    | 0x80  | ClassA1 | Class A indicator (see §4). Nearly always paired with bit 8. |
+| 7    | 0x80  | ClassA1 | Class A indicator (see §5). Nearly always paired with bit 8. |
 | 8    | 0x100 | ClassA2 | Class A indicator. Nearly always paired with bit 7. |
 | 9-11 | —     | Extra   | Higher flags seen on some FE9 bones; more common in FE10 (Wii extras). |
 | 12-17| —     | Unused  | Not observed in any known skeleton. |
@@ -178,7 +194,8 @@ The 32-bit `flags` field at `+12` is an **Intelligent Systems-proprietary bitfie
 
 **The names and semantics in this table are our best interpretation and are speculative.** The operation-codes and stack flags are inferred from hierarchy patterns and the NSBMD SBC precedent, but have not been verified against the actual game engine.
 
-### 3.2 Class A vs Class B
+### 4.2 Class A vs Class B
+Bones can be broadly sorted into two categories: Class A (World Position) and Class B (Local Transorm). These classifications are based primarily on observed flag patterns and how position data is stored within the skeleton. Class B bones exhibit more variation than Class A bones, and aspects of their position and animation behavior remain only partially understood.
 
 The primary class division is determined by **bits 7-8** (`flags & 0x180`):
 
@@ -189,12 +206,12 @@ The primary class division is determined by **bits 7-8** (`flags & 0x180`):
 
 Both classes can have animation data in `.ga` files. The distinction is about how each bone's rest-pose position is encoded in the skeleton:
 
-- **Class A** positions are directly usable as world-space bone head positions. Animation data for Class A bones is simple additive translocation/rotation deltas.
+- **Class A** positions are directly usable as world-space bone head positions. Animation data for Class A bones is simple additive translation/rotation deltas.
 - **Class B** positions must be accumulated through a parent-relative transform chain. Animation data for Class B bones applies to their local transform (the values at `+88`/`+100`), and the full world-space result can only be computed after accumulating the entire ancestor chain with rotation.
 
 **Animation of Class A bones is the most well-understood.** Animation of Class B bones combines with the skeleton's local transforms in ways that we have not fully reverse-engineered — the current plugin applies animation to the pose bones' transform channels, which works for many cases but may not perfectly match the game's internal matrix computation for all Class B chains.
 
-### 3.3 Observed Flag Values
+### 4.3 Observed Flag Values
 
 #### Class A (`flags & 0x180 != 0`)
 
@@ -236,11 +253,11 @@ Both classes can have animation data in `.ga` files. The distinction is about ho
 
 **All proposed purpose labels (e.g., "solver," "terminal chain," "variant") are inferred guesses based on hierarchy position and bone naming conventions.** They have not been verified by static analysis of the game's executable.
 
-### 3.4 NSBMD SBC Parallel
+### 4.4 NSBMD SBC Parallel
 
 The remainder of *Section 3* is relevant for understanding how bones interact with animation data. 
 
-Skip to [*Section 4*](#4-position-and-world-space-accumulation) to understand how bone position is determined. Or skip to [*Section 6*](#5-string-pool-format) to learn about the String Pool, which is the last part of skeleton files.
+Skip to [*Section 5*](#5-position-and-world-space-accumulation) to understand how bone position is determined. Or skip to [*Section 6*](#6-string-pool-format) to learn about the String Pool, which is the last part of skeleton files.
 
 The **store bit (bit 5)** and **load bit (bit 6)** map directly to the NSBMD SBC modifier bits for the `NODEDESC` (0x06) command:
 
@@ -261,7 +278,7 @@ if flags & 0x20:                # bit 5: store
 
 The FE opcode values (low 5 bits) **do not** match NSBMD SBC one-to-one. FE uses 0x06 for its standard animated chain; NSBMD SBC uses 0x06 for `NODEDESC`. The 0x07 family (FE10: 0x27, 0x67, 0x77) may map to NSBMD SBC's 0x07 = `BB` (billboard), but this is **speculative**.
 
-### 3.5 FE9 vs FE10 Flag Differences
+### 4.5 FE9 vs FE10 Flag Differences
 
 | Aspect | FE9 | FE10 |
 |--------|-----|------|
@@ -275,16 +292,17 @@ FE10 appears to have simplified the flag system by making more animated bones us
 
 ---
 
-## 4. Position and World-Space Accumulation
+## 5. Position and World-Space Accumulation
+We have classified skeleton bones into two different encoding schemes (Class A and Class B) which inform how bone position is determined. Understanding how these positions are accumulated is necessary to reconstruct the skeleton correctly.
 
-### 4.1 Terminology
+### 5.1 Terminology
 
 - **Raw file positions:** The values stored at `+112` (p112) and `+88` (p88) in each bone record.
 - **Rest position (naive):** The bone head position used for mesh skinning. For Class A this is p112 directly. For Class B this is p88 accumulated from the nearest Class B ancestor **without rotation**.
-- **True world position:** The bone head position computed with **rotation-aware accumulation** (see §4.3). Used for pose transforms and determining bone tail direction.
+- **True world position:** The bone head position computed with **rotation-aware accumulation** (see §5.3). Used for pose transforms and determining bone tail direction.
 - **Pose transform (fe_pose):** The difference between a bone's true world position and its naive rest position, stored as a pose-bone location/rotation offset in Blender.
 
-### 4.2 Data Source Selection
+### 5.2 Data Source Selection
 
 ```
 IF Class B (flags & 0x180 == 0) OR Class A with p88 non-zero:
@@ -297,7 +315,7 @@ ELSE (Class A):
 
 The dual-test (`flags & 0x180 == 0` OR `p112 ≈ 0 AND p88 ≠ 0`) catches edge cases where a bone's stored data disagrees with its flag classification.
 
-### 4.3 World-Space Accumulation Algorithm
+### 5.3 World-Space Accumulation Algorithm
 
 ```
 For each bone in file order (parents always before children):
@@ -330,7 +348,7 @@ For each bone in file order (parents always before children):
 
 Key insight: **Class A ancestors are transparent to B-chain accumulation.** A Class B bone bases its position on the nearest *Class B* ancestor, ignoring any Class A bones in between. Class A children of Class B bones similarly offset from the B-chain anchor rather than their direct parent.
 
-### 4.4 Rest Position vs Pose Position
+### 5.4 Rest Position vs Pose Position
 
 The **naive rest position** (used for Blender bone head placement and mesh skinning) is:
 
@@ -353,7 +371,7 @@ The **pose transform** (applied as Blender pose bone location + rotation) captur
 
 ---
 
-## 5. String Pool Format
+## 6. String Pool Format
 
 The string pool begins at `string_pool_offset` (from the file header). It is a sequence of null-terminated ASCII strings:
 
@@ -371,62 +389,62 @@ Bones reference their name via `name_offset` (at `+240` within the bone record),
 
 ---
 
-## 6. Bone Naming Conventions
+## 7. Bone Naming Conventions
 
-### 6.1 Hierarchy Encoding in Names
+### 7.1 Hierarchy Encoding in Names
 
 The `|` character in a bone name encodes the parent→child chain within a single string. For example:
 
 - `R_arm1|R_arm2|R_hand` → bone named `R_arm1|R_arm2|R_hand` is a child of `R_arm1|R_arm2` (forearm), which is a child of `R_arm1` (shoulder). Its full display name is `R_hand`.
 - In markdown tables the `|` may be rendered as `→` or `│` to avoid table formatting conflicts.
 
-### 6.2 Other Descriptors in Names
+### 7.2 Other Descriptors in Names
 Bone names may use `:` as a namespace separator to provide more detail about the model. For example, `armor_enemy:kensyu:body1` in the FE9 general's skeleton. This may have been used as a descriptor to distinguish modular body part options.
 
 In the Blender plugin, `:` is converted to `__` (double underscore) for compatibility with Blender's naming rules, and converted back on export.
 
-### 6.3 Non-Animated (Orientation) Bones
+### 7.3 Non-Animated (Orientation) Bones
 
 Bone names enclosed in underscores (e.g., `_sw1_`, `_s1_`, `_s2_`, `_s_`) have **not** been observed with animation data. They likely exist purely as orientation/reference guides for modellers and animators, not as skinned bones. These have been observed to correspond to `0x24` flag bones in the skeleton.
 
-### 6.4 bone0 and Root Conventions
+### 7.4 bone0 and Root Conventions
 
 - **bone0** is often named `all` or `*_locator` (e.g., `wayu_locator`).
 - `hip`, `hip0`, `hip_locator`, or a similar `hip` variant is usually the **main body bone**. It is a direct child of bone0 and is the parent of all other body-influencing bones.
 - Other direct children of bone0 typically **do not influence any mesh** and may be leftover artifacts from model creation. They may share names with mesh-influencing bones (e.g., `hip0` for an unused bone, `hip` for the active bone).
 
-### 6.5 Torso and Limbs
+### 7.5 Torso and Limbs
 
 - `body`, `chest`, or similarly named bones usually correspond to the torso. It is typically the parent of all bones in the upper half of the body.
 - Infantry skeletons typically have **3 bones per arm** (shoulder, forearm, hand) and **3 bones per leg** (thigh, calf, foot), plus one non-influencing bone at the front of each foot (`_s1_` or `_s2_`). 
     - An extra non-influencing hand bone (`_r_hand_` or similar name) is sometimes present. 
     - There may be additional bones like `L_skirt` interrupting the sequencing and relationships bewteen leg bones.
 
-### 6.6 Laterality
+### 7.6 Laterality
 
 `L`, `l`, `left` and `R`, `r`, `right` indicate the **model's own left and right** (anatomical laterality), not the viewer's perspective.
 
-### 6.7 Rider + Mount Skeletons
+### 7.7 Rider + Mount Skeletons
 
 For characters with a rider and mount together, the "main" skeleton is usually the **mount's**. The rider's skeleton is typically a child of the mount's `body` or equivalent bone.
 
-### 6.8 Weapons
+### 7.8 Weapons
 
 Weapons, if present in the skeleton, are usually children of the right hand bone.
 
-### 6.9 Name Inconsistency
+### 7.9 Name Inconsistency
 
 Bone names are **not completely consistent** between models.
 
 Many models use default/auto-generated names such as `joint8`, `pCube6`, or `plane4` that do not meaningfully describe which body part they influence.
 
-### 6.10 Language Patterns
+### 7.10 Language Patterns
 
 - Body parts and weapons are usually named in English or English shorthand (e.g., `l_leg2`, `R_arm1`, `Sword`).
 - Accessories are often named in romanized Japanese (e.g., `saya` = sheath, `manto`/`mantle` = cape).
 
 ---
-## 7. Notable Gaps in `.gs` Understanding
+## 8. Remaining Unknowns
 
 - **`+80` and `+84`** (two floats): Always zero in tested files. Could be reserved, pre-rotation scale, or an older format field. **Not yet decoded.**
 - **`+136` through `+184`** (13 floats): Zero in all tested bones. Possibly reserved or batch-animation scratch space. **Not yet decoded.**
@@ -435,17 +453,3 @@ Many models use default/auto-generated names such as `joint8`, `pCube6`, or `pla
 - **Bind matrix at `+16`:** For Class A this is identity-like. For Class B it stores an inverse-bind matrix with the negated world position in column 3. The plugin preserves this verbatim from the original file when re-exporting. Its exact use in the game engine has not been analyzed.
 - **FE10 0x27 bones and billboarding:** The 0x27 flag (opcode 0x07) may indicate a billboard bone whose transform ignores parent orientation. This has not been confirmed and may simply be IS's opcode for "standard animated bone" in FE10, distinct from FE9's 0x06.
 
----
-
-## 8. Summary of Skeleton File Layout
-
-|Offset | Content |
-|-------|---------|  
-`0x00` | **Header** (16 bytes): reserved, string_pool_offset, bone_count, `0x10` |
-`0x10` | Bone record 0 (244 bytes) |
-`0x104` | Bone record 1 (244 bytes) |
-...  | Remaining bone records |
-`0x10 + n*0xF4`  | **String pool:** `[unknown]\0name0\0name1\0...\0`  |
-
-
-Total file size = `0x10 + bone_count * 0xF4 + string_pool_size`.
