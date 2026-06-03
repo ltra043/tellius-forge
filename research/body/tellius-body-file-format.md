@@ -1,10 +1,80 @@
-# Body `.gs` Mesh Format
+# Tellius Body File Format
 
-All pointers are big-endian, raw values that need to be offset +0x20
-* **resolved file offset** = `raw_pointer + 0x20`
+**Last Updated:** 2026-06-01
+**Author:** Jade (ltra043)  
+**Scope:** Reverse-engineering notes on the format of Fire Emblem 9 and Fire Emblem 10 body (`.gs`) files. See [Tellius Skeleton File Format](../skeleton/tellius-skeleton-file-format.md) and [Tellius Animation File Format](../animation/tellius-animation-file-format.md) for analysis of other asset formats.
 
 
-## 1. File Header (0x84 bytes)
+<details>
+<summary>Keywords</summary>
+
+Fire Emblem assets, Fire Emblem model format, FE9 mesh format, FE10 mesh format, FE9 model format, FE10 model format, Path of Radiance mesh, Radiant Dawn mesh, Path of Radiance models, Radiant Dawn models, Tellius asset research, .gs format, GameCube mesh format, Wii mesh format, GameCube model format, Wii model format, reverse engineering, file format documentation, mesh reverse engineering, game asset research, 3D model format, Nintendo GameCube modding, Nintendo Wii modding, GameCube Modding, GC Modding, GC/Wii Modding
+
+</details>
+
+## General Info & Navigation
+- **All listed offsets and size values are decimal values** unless prefixed with `0x` to indicate it is a hex value.
+- All multi-byte integers and floats are **big-endian** unless noted otherwise.
+- All pointers are big-endian, raw values that need to be **offset +0x20**
+  - **resolved file offset** = `raw_pointer + 0x20`
+
+<details>
+<summary><b>Navigation</b></summary>
+
+1. [File Header](#1-file-header)
+2. [Vertex Tables](#2-vertex-tables)
+3. [Materials List](#3-materials-list)
+4. [TPL Info Blocks](#4-tpl-info-blocks)
+5. [PtrA Blocks](#5-ptra-blocks)
+6. [Chunk Descriptors](#6-chunk-descriptors)
+7. [GX Display List](#7-gx-display-list)
+8. [Interleaved Vertex Buffer (IVB)](#8-interleaved-vertex-buffer-ivb)
+9. [GX Cache / Bone Palette](#9-gx-cache--bone-palette)
+10. [String Pool](#10-string-pool)
+11. [Reloc Table](#11-reloc-table)
+12. [Notable Gaps in .gs Understanding](#12-notable-gaps-in-gs-understanding)
+
+</details>
+
+
+<details>
+<summary><b>Additional Resources</b></summary>
+
+
+1. **gs-texture-edits.exe**, available in the [Tellius Forge Toolkit](../../tools/skeleton/g-analyzer.py). This allows editing of material and texture slots and creates a detailed summary about the body data.
+2. [Tellius Forge Blender plugin](https://github.com/ltra043/tellius-forge/releases/latest): suuports import, modification, and export of FE9/FE10 skeleton files.
+3. [App for Tellius Unit Map Model Porting](https://github.com/ltra043/tellius-unit-model-ports): supports FE10 to FE9 porting  
+
+</details>
+
+## Research Status
+
+**Testing Scope:**
+The following observations are majorly based on comparison of `ymu` body files.
+
+While some other body files have been investigated, there is less conclusive information about them. This includes body files from map assets in `zmap` and battle models in `zu`.
+
+<details>
+<summary><b>Research Status Legend</b></summary>
+
+- **Confirmed** = verified through direct testing and file modification
+  - Statements of fact, concluded from very strong patterns and/or in-game debugging
+- **Strong evidence** = observed consistently across many files but not fully proven.
+  - May be based on strong but not always applicable patterns.
+  - May be based on a smaller sample size.
+  - May be very consistent but not yet confirmed in-game.
+  - Keywords: likely, seems, usually, corresponds
+- **Hypothesis** = plausible interpretation requiring further validation. 
+  - May be based on observations and trends from only a few samples. 
+  - Untested or difficult to verify.
+  - Keywords: Possible, may be related to..., potentially, theorize
+
+</details>
+
+---
+
+## 1. File Header 
+**Size:** 0x84 bytes
 
 | Offset | Size | Field | Notes |
 |---|---|---|---|
@@ -71,7 +141,8 @@ Tables are stored sequentially after the header: Position → Normal → UV → 
 - If `0x50` = 0 and `0x72` = 0, there is **no Lighting Table**. The game uses the default game lighting (no per-vertex modulation). This may utilize normal-based directional lighting. 
 - **Uniform white** (255,255,255,255) applies max modulation, which exaggerates differences between light and shadowed areas.
 
-## 3. Materials List (32 bytes per entry)
+## 3. Materials List 
+**Size:** 32 bytes per entry
 
 | Offset | Size | Field |
 |---|---|---|
@@ -86,7 +157,9 @@ Tables are stored sequentially after the header: Position → Normal → UV → 
 | +0x18 | 8 bytes | Padding (`0x00` × 8) |
 
 
-## 4. TPL Info Block (28 bytes each, contiguous after material entries)
+## 4. TPL Info Blocks 
+**Size:** 28 bytes each
+**Location:** contiguous after Materials List entries
 | Offset | Size | Field |
 |---|---|---|
 +0x01 | 1 byte | 0x01 (texture enabled)
@@ -97,13 +170,18 @@ Tables are stored sequentially after the header: Position → Normal → UV → 
 +0x14 | float32 | UV scale Y
 
 
-## 5. PtrA Block (36 bytes per chunk, 32 bytes of data + 4 bytes stride padding)
+## 5. PtrA Blocks
+**Size:** 36 bytes per chunk 
+**Composition:** 32 bytes of data + 4 bytes padding
 
-**"PtrA"** is a plugin-coined name: the block that a **Chunk Descriptor's** pointer at `0x00` targets. One PtrA block per chunk.*
+**"PtrA"** is a plugin-coined name; it contains metadata describing a chunk's min/max XYZ and unique Display-list slot value.
 
+It was named as the **PtrA block** (sometimes shortened to simply **PtrA**), because it is the block that the first pointer in a **Chunk Descriptor** targets. There is one PtrA block per chunk.*
+
+**Format:**
 | Offset | Size | Field |
 |---|---|---|
-| +0x00 | uint32 | Raw ptr → bone/node name string |
+| +0x00 | uint32 | Raw ptr →  name string (bone/node?) |
 | +0x04 | float32 × 3 | AABB min XYZ |
 | +0x10 | float32 × 3 | AABB max XYZ |
 | +0x1C | uint8 | `0x00` |
@@ -114,7 +192,9 @@ Tables are stored sequentially after the header: Position → Normal → UV → 
 **Plugin `ptra_tail` convention (implementation detail, not a format concept):** The plugin stores bytes `+0x04..+0x23` (32 bytes, omitting the name pointer) as `ptra_tail`. Slot byte sits at index 25 within this slice:
 
 
-## 6. Chunk Descriptor (32 bytes each)
+## 6. Chunk Descriptors 
+**Size:** 32 bytes each
+**Format:**
 
 | Offset | Size | Field |
 |---|---|---|
@@ -134,7 +214,9 @@ Tables are stored sequentially after the header: Position → Normal → UV → 
 
 The `hc` (color index present) and `hu` (secondary UV present) flags are at offset `+0x12` (third byte of the GX vertex attribute flags). They describe which fields appear in the per-vertex display list stream.
 
-## 7. GX Display List Per-Vertex Byte Layout
+## 7. GX Display List 
+
+**Per-Vertex Byte Layout:**
 
 | Field | Condition | Bytes |
 |---|---|---|
@@ -147,9 +229,11 @@ The `hc` (color index present) and `hu` (secondary UV present) flags are at offs
 
 `sb_byte / 3 = palette slot index`. GX uses 3x4 matrices in its matrix palette, so the raw skinning byte is divided by 3 to produce the actual palette slot index.
 
-## 8. Interleaved Vertex Buffer (IVB, battle/map models)
+## 8. Interleaved Vertex Buffer (IVB)
+**Theorized Purpose:** skinning mesh to bones for battle model (`zu`) body files.
 
-Present when header `0x68` is non-zero. Located at `raw_ptr + 0x20`. Layout:
+Present when header `0x68` is non-zero. Located at `raw_ptr + 0x20`. 
+**Layout:**
 | Offset | Size | Field |
 |--------|------|-------|
 | +0x00 | uint32  | magic 0x10 |
@@ -176,8 +260,7 @@ Beginning at `IVB + 0x10`, 0x18 bytes each. Vertex-to-bone skinning records for 
 
 Vertex data: `int16 × 6` per vertex (pos XYZ + normal XYZ), scale 256.
 
-## 9. GX Cache / Bone Palette (per chunk)
-
+## 9. GX Cache / Bone Palette 
 GX Cache blocks are stored after all Display Lists. One block per chunk that uses hardware skinning.
 
 | Offset | Field | Notes |
@@ -209,6 +292,3 @@ The table tells the game which 4-byte fields in the file contain raw pointers th
 
 - **Composite vertex buffer skinning records**: The bone weight encoding at `+0x08` (int8 x 4) is documented but the plugin currently uses single-bone assignment from `bone_a` only. Multi-weight blending is not implemented. The `bone_a2`/`bone_b2` fields at `+0x10`/`+0x12` may be double-buffered copies; their exact role is unconfirmed.
 - **Header unknown at `0x28`**: 4 bytes, preserved verbatim. Appears to be a model-specific tag, not a pointer.
-
-
-

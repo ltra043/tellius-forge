@@ -1,40 +1,75 @@
 # Tellius Skeleton File Format
 
-**Date:** 2026-06-01  
-**Scope:** Full format outline for `.g` (skeleton) files. See `body.md` and `animation.md` for `.gs` and `.ga` formats.
+**Last Updated:** 2026-06-01
+**Author:** Jade (ltra043)  
+**Scope:** Reverse-engineering notes on the format of Fire Emblem 9 and Fire Emblem 10 skeleton (`.g`) files. See [Tellius Body File Format](../body/tellius-body-file-format.md) and [Tellius Animation File Format](../animation/tellius-animation-file-format.md) for analysis of other asset formats.
+
 
 <details>
 <summary>Keywords</summary>
 
-Fire Emblem skeleton format, Fire Emblem model format, FE9 skeleton format, FE10 skeleton format, FE9 model format, FE10 model format, Path of Radiance skeleton, Radiant Dawn skeleton, Path of Radiance models, Radiant Dawn models, Tellius skeleton research, .g format, GameCube skeleton format, Wii skeleton format, GameCube model format, Wii model format, reverse engineering, file format documentation, skeleton animation data, skeleton reverse engineering, GameCube rigging, Wii rigging, game asset research, 3D model format, Nintendo GameCube modding, Nintendo Wii modding, GameCube Modding, GC Modding, GC/Wii Modding
+Fire Emblem assets, Fire Emblem model format, FE9 skeleton format, FE10 skeleton format, FE9 model format, FE10 model format, Path of Radiance skeleton, Radiant Dawn skeleton, Path of Radiance models, Radiant Dawn models, Tellius asset research, .g format, GameCube skeleton format, Wii skeleton format, GameCube model format, Wii model format, reverse engineering, file format documentation, skeleton animation data, skeleton reverse engineering, GameCube rigging, Wii rigging, game asset research, 3D model format, Nintendo GameCube modding, Nintendo Wii modding, GameCube Modding, GC Modding, GC/Wii Modding
 
 </details>
 
-### General Info & Navigation
+## General Info & Navigation
 - All multi-byte integers and floats are **big-endian** unless noted otherwise.
-- **All listed offsets and size values are decimal values** unless prefixed with `0x` to indicate a hex value.
+- **All listed offsets and size values are decimal values** unless prefixed with `0x` to indicate it is a hex value.
 
 <details>
-<summary>Navigation</summary>
+<summary><b>Navigation</b></summary>
 
 1. [File Header](#1-file-header)
-2. [](#2-)
-3. [](#3-)
-4. [](#4-)
-5. [](#5-)
-6. [](#6-)
-7. [](#7-)
-8. [](#8-)
-9. [](#9-)
-10. [](#10-)
+2. [Bone Record Format](#2-bone-record-format)
+3. [Bone Flag System](#3-bone-flag-system)
+4. [Position and World-Space Accumulation](#4-position-and-world-space-accumulation)
+5. [String Pool Format](#5-string-pool-format)
+6. [Bone Naming Conventions](#6-bone-naming-conventions)
+7. [Notable Gaps in .gs Understanding](#7-notable-gaps-in-gs-understanding)
+8. [Summary of Skeleton File Layout](#8-summary-of-skeleton-file-layout)
 
+</details>
+
+
+<details>
+<summary><b>Additional Resources</b></summary>
+
+1. FE10 [ImHex bookmarks](https://drive.google.com/file/d/1wBQgxkHshERlykjIj5WD58jmAeRpy2Wl/view?usp=drive_link) for fe10 `fighter3_n’s skeleton.g`  
+2. [Skeleton file viewer](https://docs.google.com/spreadsheets/d/1zbN7nSeyl0lY_XA7-t0zFUdaRjoDEF3c_laifMrM5Pc/edit?gid=1433193727#gid=1433193727&range=A1) : spreadsheet that parses and organizes skeleton data
+3. [g-analyzer.py](../../tools/skeleton/g-analyzer.py): parses skeleton data and creates detailed summary
+4. [Tellius Forge Blender plugin](https://github.com/ltra043/tellius-forge/releases/latest): suuports import, modification, and export of FE9/FE10 skeleton files.
+5. [App for Tellius Unit Map Model Porting](https://github.com/ltra043/tellius-unit-model-ports): supports FE10 to FE9 porting  
+
+</details>
+
+## Research Status
+
+**Testing Scope:**
+The following observations are based on comparison of `ymu` skeletons. They might not be true for EVERY skeleton. 
+
+Information related to bone rotation and location is more strongly documented than information related to scale. We believe scale is not often modified via skeleton data, so it is difficult to draw conclusions related to scale from skeleton data alone.
+
+<details>
+<summary><b>Research Status Legend</b></summary>
+
+- **Confirmed** = verified through direct testing and file modification
+  - Statements of fact, concluded from very strong patterns and/or in-game debugging
+- **Strong evidence** = observed consistently across many files but not fully proven.
+  - May be based on strong but not always applicable patterns.
+  - May be based on a smaller sample size.
+  - May be very consistent but not yet confirmed in-game.
+  - Keywords: likely, seems, usually, corresponds
+- **Hypothesis** = plausible interpretation requiring further validation. 
+  - May be based on observations and trends from only a few samples. 
+  - Untested or difficult to verify.
+  - Keywords: Possible, may be related to..., potentially, theorize
 
 </details>
 
 ---
 
 ## 1. File Header 
-Size: 16 bytes
+**Size:** 16 bytes / 0x10 bytes
 
 | Offset | Type | Field | Notes |
 |--------|------|-------|-------|
@@ -47,7 +82,8 @@ Bone records follow contiguously from `0x10` onward. Record stride = `0xF4` (244
 
 ---
 
-## 2. Bone Record Format (244 bytes / 0xF4)
+## 2. Bone Record Format 
+**Size:** 244 bytes / 0xF4 bytes
 
 | Offset | Size | Type | Field | Notes |
 |--------|------|------|-------|-------|
@@ -204,7 +240,7 @@ Both classes can have animation data in `.ga` files. The distinction is about ho
 
 The remainder of *Section 3* is relevant for understanding how bones interact with animation data. 
 
-Skip to [*Section 4*](#4-position-and-world-space-accumulation) to understand how bone position is determined. Or skip to [*Section 6*](#6-string-pool-format) to learn about the String Pool, which is the last part of skeleton files.
+Skip to [*Section 4*](#4-position-and-world-space-accumulation) to understand how bone position is determined. Or skip to [*Section 6*](#5-string-pool-format) to learn about the String Pool, which is the last part of skeleton files.
 
 The **store bit (bit 5)** and **load bit (bit 6)** map directly to the NSBMD SBC modifier bits for the `NODEDESC` (0x06) command:
 
@@ -317,18 +353,7 @@ The **pose transform** (applied as Blender pose bone location + rotation) captur
 
 ---
 
-## 5. Notable Gaps
-
-- **`+80` and `+84`** (two floats): Always zero in tested files. Could be reserved, pre-rotation scale, or an older format field. **Not yet decoded.**
-- **`+136` through `+184`** (13 floats): Zero in all tested bones. Possibly reserved or batch-animation scratch space. **Not yet decoded.**
-- **Flag opcode semantics:** The low 5 bits of the flag field may encode an operation code for the game's matrix engine. Our mapping of opcode 0x06 = "matrix multiply" and 0x07 = "billboard/special" is inferred from NSBMD SBC precedent and has not been verified via runtime analysis. **Not confirmed.**
-- **Cape/cloth physics at runtime:** Bones with `0x66`/`0x67`/`0x77` flags may undergo runtime physics modification in-game. Their Blender positions after import are the **rest pose** positions, not the animated positions seen in-game.
-- **Bind matrix at `+16`:** For Class A this is identity-like. For Class B it stores an inverse-bind matrix with the negated world position in column 3. The plugin preserves this verbatim from the original file when re-exporting. Its exact use in the game engine has not been analyzed.
-- **FE10 0x27 bones and billboarding:** The 0x27 flag (opcode 0x07) may indicate a billboard bone whose transform ignores parent orientation. This has not been confirmed and may simply be IS's opcode for "standard animated bone" in FE10, distinct from FE9's 0x06.
-
----
-
-## 6. String Pool Format
+## 5. String Pool Format
 
 The string pool begins at `string_pool_offset` (from the file header). It is a sequence of null-terminated ASCII strings:
 
@@ -346,63 +371,73 @@ Bones reference their name via `name_offset` (at `+240` within the bone record),
 
 ---
 
-## 7. Bone Naming Conventions
+## 6. Bone Naming Conventions
 
-### 7.1 Hierarchy Encoding in Names
+### 6.1 Hierarchy Encoding in Names
 
 The `|` character in a bone name encodes the parent→child chain within a single string. For example:
 
 - `R_arm1|R_arm2|R_hand` → bone named `R_arm1|R_arm2|R_hand` is a child of `R_arm1|R_arm2` (forearm), which is a child of `R_arm1` (shoulder). Its full display name is `R_hand`.
 - In markdown tables the `|` may be rendered as `→` or `│` to avoid table formatting conflicts.
 
-### 7.2 Other Descriptors in Names
+### 6.2 Other Descriptors in Names
 Bone names may use `:` as a namespace separator to provide more detail about the model. For example, `armor_enemy:kensyu:body1` in the FE9 general's skeleton. This may have been used as a descriptor to distinguish modular body part options.
 
 In the Blender plugin, `:` is converted to `__` (double underscore) for compatibility with Blender's naming rules, and converted back on export.
 
-### 7.3 Non-Animated (Orientation) Bones
+### 6.3 Non-Animated (Orientation) Bones
 
 Bone names enclosed in underscores (e.g., `_sw1_`, `_s1_`, `_s2_`, `_s_`) have **not** been observed with animation data. They likely exist purely as orientation/reference guides for modellers and animators, not as skinned bones. These have been observed to correspond to `0x24` flag bones in the skeleton.
 
-### 7.4 bone0 and Root Conventions
+### 6.4 bone0 and Root Conventions
 
 - **bone0** is often named `all` or `*_locator` (e.g., `wayu_locator`).
 - `hip`, `hip0`, `hip_locator`, or a similar `hip` variant is usually the **main body bone**. It is a direct child of bone0 and is the parent of all other body-influencing bones.
 - Other direct children of bone0 typically **do not influence any mesh** and may be leftover artifacts from model creation. They may share names with mesh-influencing bones (e.g., `hip0` for an unused bone, `hip` for the active bone).
 
-### 7.5 Torso and Limbs
+### 6.5 Torso and Limbs
 
 - `body`, `chest`, or similarly named bones usually correspond to the torso. It is typically the parent of all bones in the upper half of the body.
 - Infantry skeletons typically have **3 bones per arm** (shoulder, forearm, hand) and **3 bones per leg** (thigh, calf, foot), plus one non-influencing bone at the front of each foot (`_s1_` or `_s2_`). 
     - An extra non-influencing hand bone (`_r_hand_` or similar name) is sometimes present. 
     - There may be additional bones like `L_skirt` interrupting the sequencing and relationships bewteen leg bones.
 
-### 7.6 Laterality
+### 6.6 Laterality
 
 `L`, `l`, `left` and `R`, `r`, `right` indicate the **model's own left and right** (anatomical laterality), not the viewer's perspective.
 
-### 7.7 Rider + Mount Skeletons
+### 6.7 Rider + Mount Skeletons
 
 For characters with a rider and mount together, the "main" skeleton is usually the **mount's**. The rider's skeleton is typically a child of the mount's `body` or equivalent bone.
 
-### 7.8 Weapons
+### 6.8 Weapons
 
 Weapons, if present in the skeleton, are usually children of the right hand bone.
 
-### 7.9 Name Inconsistency
+### 6.9 Name Inconsistency
 
 Bone names are **not completely consistent** between models.
 
 Many models use default/auto-generated names such as `joint8`, `pCube6`, or `plane4` that do not meaningfully describe which body part they influence.
 
-### 7.10 Language Patterns
+### 6.10 Language Patterns
 
 - Body parts and weapons are usually named in English or English shorthand (e.g., `l_leg2`, `R_arm1`, `Sword`).
 - Accessories are often named in romanized Japanese (e.g., `saya` = sheath, `manto`/`mantle` = cape).
 
 ---
+## 7. Notable Gaps in `.gs` Understanding
 
-## 8. Summary of File Layout
+- **`+80` and `+84`** (two floats): Always zero in tested files. Could be reserved, pre-rotation scale, or an older format field. **Not yet decoded.**
+- **`+136` through `+184`** (13 floats): Zero in all tested bones. Possibly reserved or batch-animation scratch space. **Not yet decoded.**
+- **Flag opcode semantics:** The low 5 bits of the flag field may encode an operation code for the game's matrix engine. Our mapping of opcode 0x06 = "matrix multiply" and 0x07 = "billboard/special" is inferred from NSBMD SBC precedent and has not been verified via runtime analysis. **Not confirmed.**
+- **Cape/cloth physics at runtime:** Bones with `0x66`/`0x67`/`0x77` flags may undergo runtime physics modification in-game. Their Blender positions after import are the **rest pose** positions, not the animated positions seen in-game.
+- **Bind matrix at `+16`:** For Class A this is identity-like. For Class B it stores an inverse-bind matrix with the negated world position in column 3. The plugin preserves this verbatim from the original file when re-exporting. Its exact use in the game engine has not been analyzed.
+- **FE10 0x27 bones and billboarding:** The 0x27 flag (opcode 0x07) may indicate a billboard bone whose transform ignores parent orientation. This has not been confirmed and may simply be IS's opcode for "standard animated bone" in FE10, distinct from FE9's 0x06.
+
+---
+
+## 8. Summary of Skeleton File Layout
 
 |Offset | Content |
 |-------|---------|  

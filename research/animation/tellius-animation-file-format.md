@@ -1,10 +1,9 @@
 
 <h1 align="center">Tellius Animation File Format</h1>
 
-<p align="center"><i>
-Reverse-engineering notes on the format of Fire Emblem 9 and Fire Emblem 10 overworld animation (.ga) files </i><br><br>
-by Jade (ltra043)
-</p>
+**Last Updated:** 2026-06-01 
+**Author:** Jade (ltra043) 
+**Scope:** Reverse-engineering notes on the format of Fire Emblem 9 and Fire Emblem 10 animation (`.ga`) files. See [Tellius Body File Format](../body/tellius-body-file-format.md) and [Tellius Skeleton File Format](../skeleton/tellius-skeleton-file-format.md) for analysis of other asset formats.
 
 <details>
 <summary>Keywords</summary>
@@ -13,22 +12,51 @@ by Jade (ltra043)
 
 </details>
 
-## Additional Resources
 
-1. FE9 [ImHex bookmarks](https://drive.google.com/file/d/1gEC-5amlmNdOrbVD1ffcL6yReEkhC1Zu/view?usp=drive_link) for `knight’s atk1_bw.ga`  
-2. FE10 [ImHex bookmarks](https://drive.google.com/file/d/1R0Uo3316i4A9-4jWofwuXbDdNJDC2d2W/view?usp=drive_link) for fe10 `fighter3_n’s atk_2.ga` (handaxe)  
+## General Info & Navigation
+- All multi-byte integers and floats are **big-endian** unless noted otherwise.
+- **All listed offsets and size values are decimal values** unless prefixed with `0x` to indicate it is a hex value.
+
+<details>
+<summary><b>Navigation</b></summary>
+
+
+1. **[General Structure & Brief Overview](#1-general-structure--brief-overview)**
+2. **Detailed Overview**
+    - [2a. File Info](#2a-file-info)
+    - [2b. Bone Table](#2b-bone-table)
+    - [2c. Channel Data](#2c-channel-data)
+    - [2d. F-Curve Data](#2d-f-curve-data)
+    - [2e. Footer Data](#2e-footer-data) 
+        - [Footer Data 1](#footer-data-1)
+        - [Footer Data 2](#footer-data-2)
+
+</details>
+
+<details>
+<summary><b>Additional Resources</b></summary>
+
+1. [FE9 ImHex bookmarks](https://drive.google.com/file/d/1gEC-5amlmNdOrbVD1ffcL6yReEkhC1Zu/view?usp=drive_link) for `knight’s atk1_bw.ga`  
+2. [FE10 ImHex bookmarks](https://drive.google.com/file/d/1R0Uo3316i4A9-4jWofwuXbDdNJDC2d2W/view?usp=drive_link) for fe10 `fighter3_n’s atk_2.ga` (handaxe)  
 3. [ga-bookmark.py](.../tools/animation/ga-bookmark.py): creates **ImHex bookmarks** for animation files
 4. [App for Tellius Unit Map Model Porting](https://github.com/ltra043/tellius-unit-model-ports) 
     - Currently supports FE10 to FE9 porting  
-5. FE10 [ImHex bookmarks](https://drive.google.com/file/d/1wBQgxkHshERlykjIj5WD58jmAeRpy2Wl/view?usp=drive_link) for fe10 `fighter3_n’s skeleton.g`  
+5. [FE10 ImHex bookmarks](https://drive.google.com/file/d/1wBQgxkHshERlykjIj5WD58jmAeRpy2Wl/view?usp=drive_link) for fe10 `fighter3_n’s skeleton.g`  
 6. [Skeleton file viewer](https://docs.google.com/spreadsheets/d/1zbN7nSeyl0lY_XA7-t0zFUdaRjoDEF3c_laifMrM5Pc/edit?gid=1433193727#gid=1433193727&range=A1) : spreadsheet that parses and organizes skeleton data
 7. [g-analyzer.py](.../tools/skeleton/g-analyzer.py): parses skeleton data and creates detailed summary
 8. [How to port and edit ymu animation files - guide](https://docs.google.com/document/d/1oIBy46jQPswIIK-ls6cR9AbOMlFR7gbLdcyi7juQHbc/edit?usp=sharing)
 
+</details>
 
 ## Research Status
+**Testing Scope:**
+The following observations are based on comparison of `ymu` animations. They might not be true for EVERY animation. 
+  - The format is likely similar for `zu` animations.
+  - Effect animations in `yme` have much more data present. The format is the same until the Footer Data section. 
 
-**Legend:**
+  <details>
+<summary><b>Research Status Legend</b></summary>
+
 - **Confirmed** = verified through direct testing and file modification
   - Statements of fact, concluded from very strong patterns and/or in-game debugging
 - **Strong evidence** = observed consistently across many files but not fully proven
@@ -41,27 +69,20 @@ by Jade (ltra043)
   - Untested or difficult to verify
   - Keywords: Possible, may be related to..., potentially, theorize
 
-**Testing Scope:**
-The following observations are based on comparison of `ymu` animations. They might not be true for EVERY animation. 
-  - The format is likely similar for `zu` animations.
-  - Effect animations in `yme` have much more data present. The format is the same until the Footer Data section. 
+</details>
 
-## General Structure & Brief Overview
+## 1. General Structure & Brief Overview
 
 There are 4 main sections and 1 optional section to every .ga file in the ymu folder. 
 
-1. Organization / File Info  
+1. File Info  
 2. Bone Table  
 3. Channel Data  
 4. F-Curve Data  
 5. Footer Data (not included in every file)
-
-Other Notes:
-
-* All pointers are Big Endian pointers with no offset.   
     
 
-**Organization / File Info**
+**File Info**
 
 * Bytes 0x00 - 0x2f  
 * Defines the start/end frames of the animation.   
@@ -101,10 +122,10 @@ Other Notes:
 
 
 
-## Detailed Overview
+## 2. Detailed Overview
 
 
-### Organization / File Info
+### 2a. File Info
 
 <p align="center" style="font-size: 14px;">
   <img src="../../images/animation/ga-hex-file-info.png" alt="Screenshot of bookmarked File Info hex data" width = 635>
@@ -166,7 +187,7 @@ Bytes 0x20 - 0x2f. Gives the **start address of each main data section:** Bone T
 
 ---
 
-### Bone Table
+### 2b. Bone Table
 
 Ties bones from the skeleton.g file to sections of data in the Channel Data section. Establishes how many transformations a bone will undergo.
 
@@ -220,7 +241,7 @@ Ties bones from the skeleton.g file to sections of data in the Channel Data sect
 
 ---
 
-### Channel Data
+### 2c. Channel Data
 
 This section provides **information about transformation channels** and **links Bone Table Data to F-Curve Data**. Data in this section can be split into **entries that are 0x0c bytes** long. The index of the first entry is 0x00. 
 
@@ -263,7 +284,7 @@ The number of entries is defined in the Bone Table.
 
 ---
 
-### F-Curve Data
+### 2d. F-Curve Data
 
 Consists of **pairs of (frame, transform value)**, which build an animation data curve. Time measured in frames is along the X axis and transform is along the Y axis to build an f-curve graph.
 
@@ -278,7 +299,7 @@ Consists of **pairs of (frame, transform value)**, which build an animation data
 
 ---
 
-### Footer Data
+### 2e. Footer Data
 
 Contains other info about the animation file. Can be divided into parts: Footer Data 1, Footer Data 2, Footer Pointer(s). 
 
