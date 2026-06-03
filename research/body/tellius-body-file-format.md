@@ -1,9 +1,11 @@
-# Tellius Body File Format
+<h1 align="center">Tellius Body File Format</h1>
 
-**Last Updated:** 2026-06-01
-**Author:** Jade (ltra043)  
-**Scope:** Reverse-engineering notes on the format of Fire Emblem 9 and Fire Emblem 10 body (`.gs`) files. See [Tellius Skeleton File Format](../skeleton/tellius-skeleton-file-format.md) and [Tellius Animation File Format](../animation/tellius-animation-file-format.md) for analysis of other asset formats.
-
+<p align="center"><i>
+Reverse-engineering notes on the format of Fire Emblem 9 and Fire Emblem 10 body (<code>.gs</code>) files.<br>
+See <a href="../body/tellius-skeleton-file-format.md">Tellius Skeleton File Format</a> and <a href="../animation/tellius-animation-file-format.md">Tellius Animation File Format</a> for analysis of other asset formats.</i><br><br>
+<b>Author:</b> Jade (ltra043)<br>
+<b>Last Updated:</b> 2026-06-01
+</p>
 
 <details>
 <summary>Keywords</summary>
@@ -12,14 +14,14 @@ Fire Emblem assets, Fire Emblem model format, FE9 mesh format, FE10 mesh format,
 
 </details>
 
-## General Info & Navigation
+## Reader Information
 - **All listed offsets and size values are decimal values** unless prefixed with `0x` to indicate it is a hex value.
 - All multi-byte integers and floats are **big-endian** unless noted otherwise.
 - All pointers are big-endian, raw values that need to be **offset +0x20**
   - **resolved file offset** = `raw_pointer + 0x20`
 
 <details>
-<summary><b>Navigation</b></summary>
+<summary><b>Table of Contents</b></summary>
 
 1. [File Header](#1-file-header)
 2. [Vertex Tables](#2-vertex-tables)
@@ -32,15 +34,13 @@ Fire Emblem assets, Fire Emblem model format, FE9 mesh format, FE10 mesh format,
 9. [GX Cache / Bone Palette](#9-gx-cache--bone-palette)
 10. [String Pool](#10-string-pool)
 11. [Reloc Table](#11-reloc-table)
-12. [Notable Gaps in .gs Understanding](#12-notable-gaps-in-gs-understanding)
+12. [Remaining Unknowns](#12-remaining-unknowns)
 
 </details>
 
 
 <details>
 <summary><b>Additional Resources</b></summary>
-
-
 1. **gs-texture-edits.exe**, available in the [Tellius Forge Toolkit](../../tools/skeleton/g-analyzer.py). This allows editing of material and texture slots and creates a detailed summary about the body data.
 2. [Tellius Forge Blender plugin](https://github.com/ltra043/tellius-forge/releases/latest): suuports import, modification, and export of FE9/FE10 skeleton files.
 3. [App for Tellius Unit Map Model Porting](https://github.com/ltra043/tellius-unit-model-ports): supports FE10 to FE9 porting  
@@ -50,7 +50,7 @@ Fire Emblem assets, Fire Emblem model format, FE9 mesh format, FE10 mesh format,
 ## Research Status
 
 **Testing Scope:**
-The following observations are majorly based on comparison of `ymu` body files.
+The following observations are primarily based on comparison of `ymu` body files.
 
 While some other body files have been investigated, there is less conclusive information about them. This includes body files from map assets in `zmap` and battle models in `zu`.
 
@@ -73,6 +73,24 @@ While some other body files have been investigated, there is less conclusive inf
 
 ---
 
+## 1. Overall Skeleton File Layout
+
+|Offset | Content | Notes |
+|-------|---------|-------|
+| 0x00 | Header | Contains info about the file and pointers to each major section |
+| 0x80 | Vertex Tables | Position → Normal → UV → Lighting multiplier tables. Each table's start offset is stored as a raw pointer in the header (`0x44`/`0x48`/`0x4C`/`0x50`) |
+| Raw pointer in header at `0x54` | Materials List | Contains data related to Materials (collections of 1 or more textures to be simultaneously applied to parts of the mesh).  |
+| Raw pointer in **Materials List** entries at offset `0x`  | TPL Info Blocks | Contains data related to individual textures. One or more texture per Material. Raw pointers to TPL Info Blocks and # textures are defined in Materials List entries.|
+| Raw pointer in header at `0x58`  | PtrA Blocks | Per-chunk metadata.  |
+| Raw pointer in header at `0x5c`, `0x60`, or `0x64`  | Chunk Descriptors | Organizes per-chunk data such as directing to associated materials, bone palettes, and rendering instructions |
+| Raw pointer in header at `0x68` | Interleaved Vertex Buffer (IVB) | Alternate skinning data used primarily for battle `zu` body meshes. May be absent in some body files. |
+| Raw pointer in **Chunk Descriptor** entries at offset `0x14` | GX Display List |  |
+| Raw pointer in **Chunk Descriptor** entries at offset `0x1c` | GX Cache / Bone Palette  |  |
+| Region between end of **GX Cache** and start of **Reloc Table** | String Pool | List of null-terminated strings containing names of materials and other strings |
+| Raw pointer in header at `0x04` | Reloc Table | Table of relocation pointers; list of raw pointers identifying all other pointers between end of **Header** and start of **Reloc Table** |
+
+---
+
 ## 1. File Header 
 **Size:** 0x84 bytes
 
@@ -91,10 +109,10 @@ While some other body files have been investigated, there is less conclusive inf
 | `0x50` | uint32 | Raw ptr → vertex lighting multiplier table (0 if none) | |
 | `0x54` | uint32 | Raw ptr → Materials List | |
 | `0x58` | uint32 | Raw ptr → PtrA block list | Points to the first PtrA Block in a series of PtrA blocks|
-| `0x5C` | uint32 | Raw ptr → Chunk Descriptor list (primary) | Points to the first Chunk Descriptor in a series of Chunk Descriptora |
+| `0x5C` | uint32 | Raw ptr → Chunk Descriptor list (primary) | Points to the first Chunk Descriptor in a series of Chunk Descriptors |
 | `0x60` | uint32 | Raw ptr → Chunk Descriptor list (alternate) | Used when `0x5C` is zero |
 | `0x64` | uint32 | Raw ptr → Chunk Descriptor list (third fallback) | May be an older format; used when both `0x5C` and `0x60` are zero |
-| `0x68` | uint32 | Raw ptr → interleaved vertex buffer (IVB) | Present in battle/map models; 0 in overworld |
+| `0x68` | uint32 | Raw ptr → Interleaved Vertex Buffer (IVB) | Present in battle `zu` and map `zmap` models; 0 in overworld `ymu` models |
 | `0x6C` | uint16 | Vertex position count | |
 | `0x6E` | uint16 | Vertex normal count | |
 | `0x70` | uint16 | UV coordinate count | |
@@ -112,32 +130,32 @@ While some other body files have been investigated, there is less conclusive inf
 
 Tables are stored sequentially after the header: Position → Normal → UV → Lighting multiplier. Each table's start offset is stored as a raw pointer in the header (`0x44`/`0x48`/`0x4C`/`0x50`).
 
-#### Position Table
+### Position Table
 - **Size:** `int16 × 3` = 6 bytes per vertex
 - **Decode:** `x = raw / vert_scale`
 - **Alignment:** 4-byte alignment 
   - When vertex count is odd, 2 bytes of zero padding should be appended after the last position entry so the following Normal Table is 4-byte aligned.
 
-#### Normal Table
+### Normal Table
 - **Size:** `int8 × 3` = 3 bytes per normal
 - **Decode:** `nx = raw / norm_scale`
 - **Alignment:** 4-byte alignment
   - The table is padded at the end to a 4-byte boundary so the following UV table starts 4-byte aligned. 
 
 
-#### UV Table
+### UV Table
 - **Size:** `int16 × 2` = 4 bytes per entry
 - **Decode:** `u = raw / uv_scale` 
   - **V is stored negated** relative to Blender convention. Import flips with `v = 1.0 - raw/uv_scale`; export inverts back.
 - **Alignment:** naturally 4-byte aligned
 
-#### Lighting Table
+### Lighting Table
 - **Size:** `uint8 × 4` = 4 bytes per entry (RGBA)
 - **Purpose:** Table of colors which function as per-vertex lighting multipliers. 
 - Imported into Blender as Vertex Paint colors.
 - Each vertex in a chunk's display list can reference a lighting value by its index into this table (when the chunk's `hc` flag is set). 
 
-**Lighting Options**
+Lighting Options
 - If `0x50` = 0 and `0x72` = 0, there is **no Lighting Table**. The game uses the default game lighting (no per-vertex modulation). This may utilize normal-based directional lighting. 
 - **Uniform white** (255,255,255,255) applies max modulation, which exaggerates differences between light and shadowed areas.
 
@@ -274,11 +292,11 @@ GX Cache blocks are stored after all Display Lists. One block per chunk that use
 
 ## 10. String Pool
 
-A contiguous block of null-terminated strings between the last GX Cache and the Reloc Table. Holds material names referenced by the Materials List, plus the strings `"none"` and `"unknown"`.
+A contiguous block of null-terminated strings between the last GX Cache and the Reloc Table. Holds material names (e.g., `lambert28`) referenced by the Materials List, plus the strings `"none"` and `"unknown"`.
 
 ## 11. Reloc Table
 
-A sorted list of big-endian uint32 values right before the end of the file. List of **raw pointers targeting every pointer** between the end of the header and the start of the Reloc Table. 
+A sorted list of big-endian uint32 values at the end of the file. This is a list of **raw pointers targeting every pointer** between the end of the header and the start of the Reloc Table. 
 
 Offset and entry count are in the file header:
 - Header `0x04`: raw offset of the table (resolve with `+ 0x20` to get file offset)
@@ -288,7 +306,7 @@ Each entry is a raw pointer field position (file offset minus `0x20`). The game 
 
 The table tells the game which 4-byte fields in the file contain raw pointers that need the `+ 0x20` base adjustment.
 
-## 12. Notable Gaps in `.gs` Understanding
+## 12. Remaining Unknowns
 
 - **Composite vertex buffer skinning records**: The bone weight encoding at `+0x08` (int8 x 4) is documented but the plugin currently uses single-bone assignment from `bone_a` only. Multi-weight blending is not implemented. The `bone_a2`/`bone_b2` fields at `+0x10`/`+0x12` may be double-buffered copies; their exact role is unconfirmed.
 - **Header unknown at `0x28`**: 4 bytes, preserved verbatim. Appears to be a model-specific tag, not a pointer.
