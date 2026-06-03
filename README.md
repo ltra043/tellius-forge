@@ -28,7 +28,7 @@ A repository containing reverse-engineered research, documentation, and Blender 
 Detailed workflows and tutorials are available in [docs/](docs/).
 
 Recommended starting points for new users:
-- [./docs/readme.md](./docs/README.md)
+- [Quick Start Guide](./docs/README.md)
 - [Getting Started](./docs/getting-started.md)
 - Youtube Playlist: [Tellius Forge Tutorials](https://youtube.com/playlist?list=PL650N9tNdfYazuxS5b63BzaUKxZLErT0e)
 
@@ -65,10 +65,10 @@ This project primarily targets overworld (`ymu/`) models and animations from FE9
 <summary>Requirements & Tools</summary>
     
 1. [Blender](https://www.blender.org/download/) 4.2+ (tested using v5.0.1)
-2. [Latest release](https://github.com/ltra043/tellius-forge/releases/latest). Source code also available in [plugin/](./plugin/tellius-forge.py) and [tools/](./tools/)
+2. [Latest release of Tellius Forge](https://github.com/ltra043/tellius-forge/releases/latest). Source code also available in [plugin/](./plugin/tellius-forge.py) and [tools/](./tools/)
 3. [BrawlCrate](https://github.com/soopercool101/BrawlCrate)
 4. [Lumina](https://github.com/thane98/lumina) by thane98
-5. Additional python scripts in [tools/](tools/). Necessary tools will be available as executables through [Releases](https://github.com/ltra043/tellius-forge/releases)
+5. Additional utility scripts in [tools/](tools/). Necessary tools will be available as executables through [Releases](https://github.com/ltra043/tellius-forge/releases)
 6. Optional: [ImHex](https://imhex.werwolv.net/) or any hex editor
 
 </details>
@@ -88,12 +88,13 @@ This project primarily targets overworld (`ymu/`) models and animations from FE9
 ## Repository Structure
 <details>
 <summary>Click to view Repository Structure</summary>
-
-- [docs/](docs/) contains user-oriented guides.
-- [research/](research/) contains reverse-engineering notes, file format research, and technical findings.
-- [plugin/](plugin/) contains main Blender plugin.
-- [tools/](tools/) contains source code of auxiliary tools, organized by targeted asset. Required tools are also distributed as executables through [Releases](https://github.com/ltra043/tellius-forge/releases/).
-- [images/](images/) contains images organized by topic.
+  
+Tellius Forge  
+├─ [docs/](docs/)      User guides  
+├─ [research/](research/)  Reverse engineering notes  
+├─ [plugin/](plugin/)    Blender addon  
+├─ [tools/](tools/)     Utility scripts  
+└─ [images/](images/)    Documentation images  
 
 </details>
 
