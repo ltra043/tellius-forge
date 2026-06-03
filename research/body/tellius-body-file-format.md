@@ -2,7 +2,7 @@
 
 <p align="center"><i>
 Reverse-engineering notes on the format of Fire Emblem 9 and Fire Emblem 10 body (<code>.gs</code>) files.<br>
-See <a href="../body/tellius-skeleton-file-format.md">Tellius Skeleton File Format</a> and <a href="../animation/tellius-animation-file-format.md">Tellius Animation File Format</a> for analysis of other asset formats.</i><br><br>
+See <a href="../skeleton/tellius-skeleton-file-format.md">Tellius Skeleton File Format</a> and <a href="../animation/tellius-animation-file-format.md">Tellius Animation File Format</a> for analysis of other asset formats.</i><br><br>
 <b>Author:</b> Jade (ltra043)<br>
 <b>Last Updated:</b> 2026-06-01
 </p>
@@ -42,8 +42,8 @@ Fire Emblem assets, Fire Emblem model format, FE9 mesh format, FE10 mesh format,
 
 <details>
 <summary><b>Additional Resources</b></summary>
-1. **gs-texture-edits.exe**, available in the [Tellius Forge Toolkit](../../tools/skeleton/g-analyzer.py). This allows editing of material and texture slots and creates a detailed summary about the body data.
-2. [Tellius Forge Blender plugin](https://github.com/ltra043/tellius-forge/releases/latest): supports import, modification, and export of FE9/FE10 skeleton files.
+1. **gs-texture-edits.exe**, available in the [Tellius Forge Toolkit](https://github.com/ltra043/tellius-forge/releases/latest). This allows editing of material and texture slots and creates a detailed summary about the body data.
+2. [Tellius Forge Blender plugin](https://github.com/ltra043/tellius-forge/releases/latest): supports import, modification, and export of FE9/FE10 assets.
 3. [App for Tellius Unit Map Model Porting](https://github.com/ltra043/tellius-unit-model-ports): supports FE10 to FE9 porting  
 
 </details>
@@ -80,12 +80,12 @@ While some other body files have been investigated, there is less conclusive inf
 |-------|---------|-------|
 | `0x00` | Header | Contains info about the file and pointers to each major section |
 | `0x84` (if present) | Vertex Tables | **Position** → **Normal** → **UV** → **Lighting Multiplier** tables. Each table's start offset is stored as a raw pointer in the header (`0x44`/`0x48`/`0x4C`/`0x50`) |
-| Raw pointer in header at `0x54` | Materials List | Contains data related to Materials (material = collection of 1 or more textures to be simultaneously applied to parts of the mesh).  |
-| Raw pointer in **Materials List** entries at offset `0x14`  | TPL Info Blocks | Contains data related to individual textures. One or more texture per Material. |
-| Raw pointer in header at `0x58`  | PtrA Blocks | Per-chunk metadata  |
-| Raw pointer in header at `0x5c`, `0x60`, or `0x64`  | Chunk Descriptors | Organizes per-chunk data such as linking to associated materials, bone palettes, and rendering instructions |
-| Raw pointer in **Chunk Descriptor** entries at offset `0x14` | GX Display List | Provides per-vertex **references to Vertex Tables** used to inform GX GPU rendering. May be absent if **IVB** is present. |
-| Raw pointer in **Chunk Descriptor** entries at offset `0x1c` | GX Cache / Bone Palette  | Mapping for GX matrix palette skinning mesh to bones. Only present on chunks with the `sb` flag set; may be absent when **IVB** is used. |
+| Raw pointer in header at `0x54` | Materials List | Contains per-material metadata and links to associated texture(s).|
+| Raw pointer in **Materials List** entries at offset `0x14` | TPL Info Blocks | Contains **per-texture metadata** including TPL slot assignment, UV scaling, and unknown fields. There is one or more texture per Material. |
+| Raw pointer in header at `0x58` | "PtrA" Blocks | Per-chunk metadata blocks. PtrA is a custom term created for the plugin. |
+| Raw pointer in header at `0x5c`, `0x60`, or `0x64` | Chunk Descriptors | **Chunk:** A subdivision of a mesh that groups geometry with associated rendering metadata. Each chunk is represented by a Chunk Descriptor and is rendered independently. <br><br> Chunk Descriptors link to associated materials, bone palettes, and GX Diaplay Lists (rendering instructions). |
+| Raw pointer in **Chunk Descriptor** entries at offset `0x14` | GX Display List | Provides per-vertex **indices into the Vertex Tables** used during GX rendering. May be absent if **IVB** is present. |
+| Raw pointer in **Chunk Descriptor** entries at offset `0x1C` | GX Cache / Bone Palette | Mapping for GX matrix palette skinning mesh to bones. Only present on chunks with the `sb` flag set; may be absent when **IVB** is used. |
 | Raw pointer in header at `0x68` | Interleaved Vertex Buffer (IVB) | Alternate skinning data used primarily for battle `zu` body meshes. May be absent (when GX Display List and GX Cache are present). |
 | Region between end of **GX Cache** and start of **Reloc Table** | String Pool | List of null-terminated strings containing names of materials and other strings |
 | Raw pointer in header at `0x04` | Reloc Table | Table of relocation pointers. This lists raw pointers identifying all pointers between end of **Header** and start of **Reloc Table** |
@@ -102,7 +102,7 @@ While some other body files have been investigated, there is less conclusive inf
 | Offset | Size | Field | Notes |
 |---|---|---|---|
 | `0x00` | uint32 | File size | |
-| `0x04` | uint32 | Reloc table offset - 0x20 | |
+| `0x04` | uint32 | Raw ptr → Reloc Table | |
 | `0x08` | uint32 | Reloc entry count | |
 | `0x20` | uint32 | Raw ptr → string `unknown`| If absent, raw ptr = 0 |
 | `0x24` | 4 bytes | Build date tag | Always `20 04 07 23` |
@@ -164,7 +164,7 @@ Tables are stored sequentially after the header: **Position** → **Normal** →
 
 Lighting Options
 - If `0x50` = 0 and `0x72` = 0, there is **no Lighting Table**. The game uses the default game lighting (no per-vertex modulation). This may utilize normal-based directional lighting. 
-- **Uniform white** (255,255,255,255) applies max modulation, which exaggerates differences between light and shadowed areas.
+- **Uniform white** (255,255,255,255) applies the maximum lighting multiplier and produces the strongest contrast between lit and shadowed areas.
 
 ## 4. Materials List 
 **Size:** 32 bytes per entry
@@ -184,25 +184,29 @@ Lighting Options
 
 
 ## 5. TPL Info Blocks 
-**Size:** 28 bytes each
+**Size:** 28 bytes each (0x1C bytes)
 **Location:** contiguous after Materials List entries
   - The first TPL Info Block for each material is identified by the raw pointer in Materials List entry offset `+0x14`
 
-| Offset | Size | Field |
-|---|---|---|
-+0x01 | 1 byte | 0x01 (texture enabled)
-+0x05 | 1 byte | TPL texture slot index
-+0x06 | 1 byte | Sampling flag A | Always `0x01` in tested files; exact meaning unknown
-+0x07 | 1 byte | Sampling flag B | Always `0x01` in tested files; exact meaning unknown
-+0x10 | float32 | UV scale X (1.0 = 3F 80 00 00)
-+0x14 | float32 | UV scale Y
+| Offset | Size | Field | Notes |
+|--------|------|-------|-------|
+| +0x00 | uint8 | Reserved | Always `0x00` |
+| +0x01 | uint8 | Constant | Always `0x01` in observed files. Possibly a marker or enables the texture. |
+| +0x02 | 3 bytes | Padding | `0x00 00 00` |
+| +0x05 | uint8 | TPL texture slot index | 0-based index into the `.tpl` container |
+| +0x06 | uint8 | Sampling flag A | `0x01` across all sampled character models. `0x00` found in sampled `bmap*` models (observed in its last TPL info block). Exact meaning unknown. |
+| +0x07 | uint8 | Sampling flag B | `0x01` across all sampled character models. `0x00` found in sampled `bmap*` models (observed in its last TPL info block). Exact meaning unknown. |
+| +0x08 | 8 bytes | Padding | `0x00` * 8 |
+| +0x10 | float32 | UV scale X | `3F 80 00 00` = 1.0 |
+| +0x14 | float32 | UV scale Y | `3F 80 00 00` = 1.0 |
+| +0x18 | uint32 | Padding | Always `0x00000000` |
 
 
 ## 6. PtrA Blocks
 **Size:** 36 bytes per chunk 
 **Composition:** 32 bytes of data + 4 bytes padding
 **Location:** Raw pointer in header at `0x58`
-  - The  PtrA Block for each chunk is identified by the raw pointer in each Chunk Descriptor entry at offset `+0x00`
+  - The PtrA Block for each chunk is identified by the raw pointer in each Chunk Descriptor entry at offset `+0x00`
 
 **"PtrA"** is a plugin-coined name; it contains metadata describing a chunk's min/max XYZ and unique Display-list slot value.
 
@@ -211,7 +215,7 @@ It was named as the **PtrA block** (sometimes shortened to simply **PtrA**), bec
 **Format:**
 | Offset | Size | Field |
 |---|---|---|
-| +0x00 | uint32 | Raw ptr →  name string (bone/node?) |
+| +0x00 | uint32 | Raw ptr → name string (bone/node?) |
 | +0x04 | float32 × 3 | AABB min XYZ |
 | +0x10 | float32 × 3 | AABB max XYZ |
 | +0x1C | uint8 | `0x00` |
@@ -219,14 +223,17 @@ It was named as the **PtrA block** (sometimes shortened to simply **PtrA**), bec
 | +0x1E | uint16 | `0x0000` |
 | +0x20 | uint32 | Stride padding (mostly `0x00000000`) |
 
-**Plugin `ptra_tail` convention (implementation detail, not a format concept):** The plugin stores bytes `+0x04..+0x23` (32 bytes, omitting the name pointer) as `ptra_tail`. Slot byte sits at index 25 within this slice:
 
+### Note about PtrA in the plugin:
+**Plugin `ptra_tail` convention (implementation detail, not a format concept):** The plugin stores bytes `+0x04..+0x23` (32 bytes, omitting the name pointer) as `ptra_tail`. Slot byte sits at index 25 within this slice. 
 
 ## 7. Chunk Descriptors 
 **Size:** 32 bytes each
 **Location:** Raw pointer in header at `0x5C`, `0x60`, and/or `0x64`
-  - It is unknown why there can be more than one header pointer to this section, or  the meaning behind the different pointer locations
+  - Files may use the pointer at `0x5C`,`0x60`, **and/or** `0x64`. The reason for these alternate locations has not yet been determined.
   - Each following Chunk Descriptor start offset is identified in the previous Chunk Descriptor entry, at offset +0x04.
+
+**Purpose:** A **chunk** is a subdivision of a mesh that is rendered independently. Each chunk is represented by a **Chunk Descriptor** that **provides associated rendering metadata** such as materials, bone palettes, and display lists.
 
 **Format:**
 
@@ -271,7 +278,7 @@ Encoded as `0x98` (`GX_DRAW_TRIANGLE_STRIP`) commands. Each command starts with 
 ## 9. GX Cache / Bone Palette 
 **Size:** 32 bytes per palette. *See note below the layout table for an exception to this size rule.*
 
-**Location:** Raw pointer in each **Chunk Descriptor** entry at **offset +0x18**. GX Cache blocks are stored after all Display Lists. 
+**Location:** Raw pointer in each **Chunk Descriptor** entry at **offset +0x1C**. GX Cache blocks are stored after all Display Lists. 
 
 **Purpose:** Bone-to-palette-slot mapping for GX matrix palette skinning. Each block lists bone IDs loaded into consecutive GX matrix palette slots. Only present on chunks with the `sb` flag set; absent when **IVB** is used.
 
@@ -281,7 +288,7 @@ Encoded as `0x98` (`GX_DRAW_TRIANGLE_STRIP`) commands. Each command starts with 
 |--------|-------|-------|
 | `+0` | Constant Marker | Always `0x10` |
 | `+1` | palette bone count (N) |  |
-|  `+2` through `N+1` | bone IDs | Sorted ascending. The same bone ID can appear in multiple palettes. |
+| `+2` through `N+1` | bone IDs | Sorted ascending. The same bone ID can appear in multiple palettes. |
 | `N+2` | Padding | Padded with `0x00` to 32 bytes per Bone Palette. **See FE9 Exception below table.** |
 
 **In FE9 only:** the very last Bone Palette is not padded. The **String Pool** begins immediately after the last bone ID in the last Bone Palette.
@@ -289,13 +296,13 @@ Encoded as `0x98` (`GX_DRAW_TRIANGLE_STRIP`) commands. Each command starts with 
 ## 10. Interleaved Vertex Buffer (IVB)
 **Location:** Raw pointer in header at `0x68`
 
-**Theorized Purpose:** skinning mesh to bones for battle model (`zu`) and some map asset (`zmap`) body files. May allow assignment of vertices to multiple bones and multi-bone weight blending. If present, this may replace the function of vertex position and/or normal tables. 
+**Theorized Purpose:** skinning mesh to bones for battle model (`zu`) and some map asset (`zmap`) body files. May support assignment of vertices to multiple bones and multi-bone weight blending. If present, this may replace the function of vertex position and/or normal tables. 
 
 Present when header `0x68` is non-zero. Located at `raw_ptr + 0x20`. 
 **Layout:**
 | Offset | Size | Field |
 |--------|------|-------|
-| +0x00 | uint32  | magic 0x10 |
+| +0x00 | uint32 | magic 0x10 |
 | +0x04 | uint32 | vertex data offset (relative to IVB header) |
 | +0x08 | uint16 | skinning record count |
 | +0x0A | uint16 | vertex count |
@@ -330,14 +337,17 @@ Beginning at `IVB_start + 0x10`, 0x18 bytes each. Vertex-to-bone skinning record
 | +0x00 | int16 | position X |
 | +0x02 | int16 | position Y |
 | +0x04 | int16 | position Z |
-| +0x06 | int16 | normal X  |
+| +0x06 | int16 | normal X |
 | +0x08 | int16 | normal Y |
 | +0x0A | int16 | normal Z |
 
 
 ## 11. String Pool
+**Location:** between the last GX Cache (or end of IVB) and the Reloc Table
 
-A block of null-terminated strings between the last GX Cache (or end of IVB) and the Reloc Table. Holds material names (e.g., `lambert28`) referenced by the Materials List, plus the strings `"none"` and `"unknown"`.
+The string pool is a block of null-terminated strings. It holds material names and miscellaneous strings referenced by raw pointers elsewhere in the file. Strings are alphanumerically sorted ascending.
+
+A common material name is `lambert*` (e.g., `lambert28`). The strings `none` and `unknown` have been observed in every sample file.
 
 ## 12. Reloc Table
 
