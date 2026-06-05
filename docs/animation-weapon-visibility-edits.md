@@ -65,7 +65,9 @@ This includes:
 - Verified the model imports correctly into Blender
 - Verified the model functions correctly in-game
 
-#### Applicable Context
+#### About Scale Transforms
+
+Tellius animations do not contain a dedicated visibility track. Weapon visibility is controlled by bone scale. Setting a weapon bone's scale to 0 makes the associated mesh invisible; setting scale back to 1 restores normal visibility (and size).
 
 Although this guide focuses on weapon visibility, the same techniques can be used to add or modify scale animation data for any bone.
 
