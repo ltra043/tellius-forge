@@ -47,12 +47,12 @@ Optional / Recommended:
 
 </details>
 
-#### Goals: 
+### Goals: 
 - Make addon weapon invisible in existing animations
 - Make original weapons invisible in new weapon animations
 
 
-#### Prerequisites
+### Prerequisites
 This guide is written for the scenario where you have added new weapon mesh and bones to a model and want to update the model's animations. 
 
 Before following this guide, you should already have modified assets as outlined in *Body & Skeleton Workflow* (available in [Resources & Requirements](#reader-information). 
@@ -65,13 +65,13 @@ This includes:
 - Verified the model imports correctly into Blender
 - Verified the model functions correctly in-game
 
-#### About Scale Transforms
+### About Scale Transforms
 
 Tellius animations do not contain a dedicated visibility track. Weapon visibility is controlled by bone scale. Setting a weapon bone's scale to 0 makes the associated mesh invisible; setting scale back to 1 restores normal visibility (and size).
 
 Although this guide focuses on weapon visibility, the same techniques can be used to add or modify scale animation data for any bone.
 
-#### Choosing a Method
+### Choosing a Method
 
 There are 3 methods to update bone visibility. Pros and cons are listed for each option in their individual written sections. The options are listed from most to least recommended.
 1. **[Using Tellius Forge Toolkit](#2-make-bones-invisible-using-tellius-forge-toolkit):** simple, fast, minor chance of error, nothing learned but little to misunderstand 
@@ -358,13 +358,13 @@ White Arrow (bottom): Export Animations button
 **Cons:** slowest option, error-prone, requires viewing skeleton in Blender or a hex editor 
 
 **About:**  
-This is the option I **least recommend**. It is **slow** and has **high likelihood of error**.  I will cover it first because it demonstrates the same hex data changes the other two options make. The other options are faster and less involved.
+This is the option I **least recommend**. It is **slow** and has **high likelihood of error**.  I will cover it because it demonstrates the same hex data changes the other two options make. The other options are faster and less involved.
 
 This guide does not cover the hex data format in depth. See *Tellius Animation File Format* and *Tellius Skeleton File Format*, available in [Resources & Requirements](#reader-information), for a detailed analysis.
 
 1. Open an animation in a hex editor.
 2. Find the **bone count** at byte 0x1F.
-3. **Increase bone count** by the number of additional bones you want to make invisible (+0x01 if you added 1 weapon, +0x02 for 2 weapons, ...)
+3. **Increase bone count** by the number of additional bones you want to make invisible (+0x01 if you added 1 weapon, +0x02 for 2 weapons, ...).
 
 ### 4.1 Bone Table Edits:
 1. Follow the pointer at address `0x24` to the **start of Channel Data**. This is one byte after the **end of the Bone Table**.
@@ -397,7 +397,7 @@ This guide does not cover the hex data format in depth. See *Tellius Animation F
    1. Find the last 4 bytes before the added data. This is the `last_frame_index`.
    2. Find the 2 bytes before `last_frame_index`. These 2 bytes are `last_frame_count`.
    3. Add together `last_frame_index` and `last_frame_count` to get the `next_frame_index`.
-3. Update the last 4 bytes of each added `0x0C` byte entry
+3. Update the last 4 bytes of each added `0x0C` byte entry.
    1. Replace `EE EE EE E0` with `next_frame_index`.
    2. Replace `EE EE EE E1` with `next_frame_index + 0x01`
    3. Replace `EE EE EE E2` with `next_frame_index + 0x02`
