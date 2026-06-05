@@ -2,7 +2,7 @@
 
 <p align="center"><i>
 Basic animation (in)visibility editing using hex editing, Blender, or Tellius Forge Toolkit.<br>
-<a href="https://github.com/ltra043/tellius-forge">See Video Tutorial (TODO)</a></i><br>
+<a href="https://github.com/ltra043/tellius-forge/blob/main/docs/animation-weapon-visibility-edits.md">See Video Tutorial (TODO)</a></i><br>
 </p>
 
 <p>
@@ -55,7 +55,7 @@ Optional / Recommended:
 #### Prerequisites
 This guide is written for the scenario where you have added new weapon mesh and bones to a model and want to update the model's animations. 
 
-Before following this guide, you should already have modified assets as outlined in *Body & Skeleton Workflow*(available in [Resources & Requirements](#reader-information). 
+Before following this guide, you should already have modified assets as outlined in *Body & Skeleton Workflow* (available in [Resources & Requirements](#reader-information). 
 
 This includes:
 
