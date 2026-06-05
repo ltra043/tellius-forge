@@ -38,7 +38,7 @@ Basic animation (in)visibility editing using hex editing, Blender, or Tellius Fo
 
 Optional / Recommended:
 1. Programmer Calculator or any hex calculator
-2. [Skeleton Analyzer](../tools/skeleton/g-skeleton-analyzer.py): Summarizes skeleton data, including provision of a table of bone IDs and bone names.
+2. [Skeleton Analyzer](../tools/skeleton/g-skeleton-analyzer/g-skeleton-analyzer.py): Summarizes skeleton data, including provision of a table of bone IDs and bone names.
 3. [Body & Skeleton Workflow](./body-skeleton-workflow.md)
 3. [Youtube Tutorial Playlist](https://youtube.com/playlist?list=PL650N9tNdfYazuxS5b63BzaUKxZLErT0e)
 4. [Tellius Animation File Format](../research/animation/tellius-animation-file-format.md)
@@ -55,7 +55,7 @@ Optional / Recommended:
 ### Prerequisites
 This guide is written for the scenario where you have added new weapon mesh and bones to a model and want to update the model's animations. 
 
-Before following this guide, you should already have modified assets as outlined in *Body & Skeleton Workflow* (available in [Resources & Requirements](#reader-information). 
+Before following this guide, you should already have modified assets as outlined in *Body & Skeleton Workflow* (available in [Resources & Requirements](#reader-information)). 
 
 This includes:
 
@@ -130,9 +130,9 @@ This is the **least recommended option**. I only include it so you might underst
 ---
 
 ## 2. Make Bone(s) Invisible Using Tellius Forge Toolkit
-**Preference:** high
-**Pros:** fast, simplest option
-**Cons:** (small) chance of error, requires viewing skeleton in Blender or a hex editor
+**Preference:** high  
+**Pros:** fast, simplest option  
+**Cons:** (small) chance of error, requires viewing skeleton in Blender or a hex editor  
 
 **About:** 
 This is the **simplest and fastest** option. It should take a maximum of few minutes.
@@ -368,7 +368,7 @@ This guide does not cover the hex data format in depth. See *Tellius Animation F
 
 ### 4.1 Bone Table Edits:
 1. Follow the pointer at address `0x24` to the **start of Channel Data**. This is one byte after the **end of the Bone Table**.
-2. Add a row of `0x10` bytes to the end of the Bone Table for every additional bone you want to make invisible.
+2. Add a row of `0x10` bytes to the end of the Bone Table. Add one row for every bone you want to make invisible.
 3. Bookmark or note the new start of **Channel Data**.
 4. Update the pointer at `0x24` to the new start address of **Channel Data**.
 
@@ -387,7 +387,7 @@ This guide does not cover the hex data format in depth. See *Tellius Animation F
 4. Update the pointer at `0x2C` to the new start address of **F-Curve Data**.
 
 **Update New Channel Data Entries**
-1. Copy and paste the following data over the inserted bytes.
+1. Copy and paste the following data over every inserted 0x24 bytes.
 ```
 00 00 0F 00 / 00 00 00 01 / EE EE EE E0
 00 01 0F 00 / 00 00 00 01 / EE EE EE E1
@@ -407,7 +407,7 @@ This guide does not cover the hex data format in depth. See *Tellius Animation F
    1. Check the first 4 bytes of the file. This is the **header pointer**. If 0, F-Curve Data is the last section of the file.  
 
    *For FE9 Files:*
-   1. If **header pointer** is non-zero, the value as a big-endian pointer. 
+   1. If **header pointer** is non-zero, the value is a big-endian pointer. 
    2. To update the pointer value,  add `(0x10 + 0x24) * num_added_bones` to this value. 
    3. This pointer should now take you to 1 byte after the end of F-Curve Data.  
    
@@ -418,7 +418,7 @@ This guide does not cover the hex data format in depth. See *Tellius Animation F
    4. If the 4-byte **header pointer target** value is 0x00, the **next 4 bytes** is a pointer called **footer pointer 1**.
    5. If the 4-byte **header pointer target** value is 0x05, the **last 4 bytes** is a pointer called **footer pointer 1**.
    4. Follow **footer pointer 1** as a big-endian pointer. This takes you to 1 byte after the end of F-Curve Data. 
-3. Insert `0x0C` bytes after the last byte of F-Curve Data.
+3. For every new invisible bone, insert `0x0C` bytes after the last byte of F-Curve Data.
 4. Leave all added bytes as `0x00`.
 
 *Update Footer Pointers*
