@@ -9,14 +9,33 @@ from PyQt6.uic import loadUi
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QStackedWidget, 
                              QMessageBox, QFileDialog)
 # from PyQt6.QtGui import QStandardItemModel
-# from ga_modules import navigate
 from datetime import datetime
-from modules.config import *
 import struct
 
-assets_path = Path(resource_path('assets'))
-asset_ui = assets_path.joinpath('simple-ga-edits.ui')
+# resource_path.reset(relative_path)        return os.path.join(base_path, relative_path)
+def resource_path(relative_path):
+    """ Redirect referenced paths
+    Redirects the paths of external files referenced by this script.
+    Wrap all filenames with the function resource_path()
 
+    Modified to use pathlib instead of os.
+        os version from https://stackoverflow.com/questions/31836104
+
+    :param relative_path: Path
+    :return: os.path.join(base_path, relative_path): Path
+    """
+    try:
+        base_path = sys._MEIPASS2
+    except Exception:
+        # base_path = os.path.abspath(".")
+        base_path = Path(__file__).parent
+        base_path = base_path.resolve()
+
+    # return os.path.join(base_path, relative_path)
+    return base_path.joinpath(relative_path)
+
+assets_path = Path(resource_path('assets'))
+asset_ui = assets_path.joinpath('ga-simple-edits.ui')
 
 class MainWindow(QMainWindow):
     def __init__(self):
