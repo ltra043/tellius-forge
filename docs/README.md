@@ -6,13 +6,13 @@ The written guides are intended to supplement the tutorial videos and serve as a
 
 ## Quick-Start Guide
 
-1. Read [Getting Started](./getting-started.md)
+1. Read [Getting Started](./getting-started.md).
 2. Watch the [tutorial videos](https://youtube.com/playlist?list=PL650N9tNdfYazuxS5b63BzaUKxZLErT0e&si=egK1UIZA0K-ZWOmL).
 3. Install the Blender plugin.
 4. Import models and experiment in Blender.
 5. Follow [Body & Skeleton Workflow](./body-skeleton-workflow.md) when modifying models.
 6. Follow [Animation Weapon Visibility Edits](./animation-weapon-visibility-edits.md) to fix weapon *after adding new weapons*.
-7. Reference other documents as needed
+7. Reference other documents as needed.
 
 ## Available Documents
 
