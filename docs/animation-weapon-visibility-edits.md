@@ -2,7 +2,7 @@
 
 <p align="center"><i>
 Basic animation (in)visibility editing using hex editing, Blender, or Tellius Forge Toolkit.<br>
-<a href="">See Video Tutorial</a></i><br>
+<a href="https://github.com/ltra043/tellius-forge">See Video Tutorial (TODO)</a></i><br>
 </p>
 
 <p>
@@ -61,9 +61,9 @@ This includes:
 
 - Added the weapon mesh and weapon bone(s)
 - Exported the modified body and skeleton
-- If applicable, performed basic animation edits needed for compatibility with "Blender Hierarchy" bone order.
+- If applicable, performed basic animation edits needed for compatibility with "Blender Hierarchy" bone order
 - Verified the model imports correctly into Blender
-- Verified the model functions correctly in-game.
+- Verified the model functions correctly in-game
 
 #### Applicable Context
 
@@ -73,7 +73,7 @@ Although this guide focuses on weapon visibility, the same techniques can be use
 
 There are 3 methods to update bone visibility. Pros and cons are listed for each option in their individual written sections. The options are listed from most to least recommended.
 1. **[Using Tellius Forge Toolkit](#2-make-bones-invisible-using-tellius-forge-toolkit):** simple, fast, minor chance of error, nothing learned but little to misunderstand 
-2. **[Using Blender](#3-make-bones-invisible-using-blender):** simple,  slow-ish, almost no chance of error, easy to understand.
+2. **[Using Blender](#3-make-bones-invisible-using-blender):** simple,  slow-ish, almost no chance of error, easy to understand
 3. **[Using a Hex Editor](#4-make-bones-invisible-using-a-hex-editor):** complex, slowest, high chance of error, teaches the most about the hex format
 
 ---
@@ -154,7 +154,7 @@ All mentioned downloads and reference materials are linked in [Resources & Requi
   <img src="../images/animation/ga-simple-edit-page-0-start.png" alt="Image 1: Start page of ga-simple-edits UI.
   Orange (top): Editing Options.
   Green (center): Input Folder Path.
-  Blue (bottom): Output Folder Path." style="border: 2px solid white;">
+  Blue (bottom): Output Folder Path." width=400 style="border: 2px solid white;">
   <br>
   <em><b>
   Image 1: Start page of ga-simple-edits UI </b><br>
@@ -178,7 +178,7 @@ All mentioned downloads and reference materials are linked in [Resources & Requi
   <img src="../images/animation/ga-simple-edit-page-1-invis.png" alt="Image 2: Page 1 ('Invis') of ga-simple-edits UI. 
   Red (top): Bone IDs Textbox. 
   Blue (center): Confirm button. 
-  Yellow (bottom): Status Text. " style="border: 2px solid white;">
+  Yellow (bottom): Status Text. " width=400 style="border: 2px solid white;">
   <br>
   <em><b>
   Image 2: Page 1 ("Invis") of ga-simple-edits UI</b><br>
@@ -218,8 +218,8 @@ All mentioned downloads and reference materials are linked in [Resources & Requi
 
 <p align="center" style="font-size: 14px;">
 <img src="../images/animation/blender-ui-animation-workspace.png" alt="Image 3: Animation Workspace. 
-1. Top Right (Red): Outliner in View Layer mode (default). 
-2. Bottom Right (Yellow): Data Properties (default). 
+1. Top Right (red): Outliner in View Layer mode (default). 
+2. Bottom Right (yellow): Data Properties (default). 
 3. Top Center (blue): 3D Viewport (default). 
 4. Bottom Left (pink): Graph Editor. 
 5. Top Left (green): Dope Sheet in Action Sheet mode. Press N to open the right side panel." 
@@ -227,8 +227,8 @@ style="border: 2px solid white;">
 <br>
 <em><b>
 Image 3: Animation Workspace</b><br>
-1. Top Right (Red): Outliner in View Layer mode (default)<br>
-2. Bottom Right (Yellow): Data Properties (default)<br>
+1. Top Right (red): Outliner in View Layer mode (default)<br>
+2. Bottom Right (yellow): Data Properties (default)<br>
 3. Top Center (blue): 3D Viewport (default)<br>
 4. Bottom Left (pink): Graph Editor<br>
 5. Top Left (green): Dope Sheet in Action Sheet mode. Press N to open the right side panel.<br>
@@ -275,7 +275,7 @@ Red Box/X: End Frame from Animation Data.
 Green Box/Circle: Start Frame from Animation Data. 
 Yellow Arrow (bottom): Toggle Playback Controls. 
 " 
-style="border: 2px solid white;">
+width=400 style="border: 2px solid white;">
 <br>
 <em><b>
 Image 5: Action Sheet UI</b><br>
@@ -325,7 +325,7 @@ Blue: Search Filter Textbox.
 Pink: List of Exported Actions. 
 White Arrow (bottom): Export Animations button. 
 " 
-style="border: 2px solid white;">
+width=600 style="border: 2px solid white;">
 <br>
 <em><b>
 Image 6: Export Animations UI</b><br>
