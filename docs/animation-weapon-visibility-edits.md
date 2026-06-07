@@ -110,7 +110,7 @@ All mentioned downloads and reference materials are linked in [Resources & Requi
 `python "/path/to/g-skeleton-analyzer.py" -h`
 4. To analyze a skeleton file, run:
 `python "/path/to/g-skeleton-analyzer.py" "path/to/skeleton.g"`
-5. By default, an output `.md` analysis summary will appear in the same directory as the input skeleton.
+5. An output `.md` analysis summary will be written to the same directory as the input skeleton.
 6. Open the `.md` analysis. There will be a table that, among other fields, lists bone IDs and bone names.
 7. Locate the names of all main weapon bones. Note the names and bone IDs (hex).
    1. You do not need to remember the bone IDs for children bones which control none or part of a weapon mesh. **Only bones which influence the entire weapon mesh.**
@@ -197,9 +197,9 @@ All mentioned downloads and reference materials are linked in [Resources & Requi
 ---
 
 ## 3. Make Bone(s) Invisible Using Blender
-**Preference:** medium
-**Pros:** good visual display, little to no chance of error, simple
-**Cons:** slow
+**Preference:** medium  
+**Pros:** good visual display, little to no chance of error, simple  
+**Cons:** slow  
 
 **About:** 
 This is a **simple option** where it is easy to **visually understand** what you are doing. There is almost **no chance of error**. This option is **slower than using the toolkit app**, though not as slow as hex editing. 
@@ -354,8 +354,8 @@ White Arrow (bottom): Export Animations button
 
 ## 4. Make Bone(s) Invisible Using a Hex Editor
 **Preference:** low  
-**Pros:** good for understanding the hex data format
-**Cons:** slowest option, error-prone, requires viewing skeleton in Blender or a hex editor 
+**Pros:** good for understanding the hex data format  
+**Cons:** slowest option, error-prone, requires viewing skeleton in Blender or a hex editor  
 
 **About:**  
 This is the option I **least recommend**. It is **slow** and has **high likelihood of error**.  I will cover it because it demonstrates the same hex data changes the other two options make. The other options are faster and less involved.
