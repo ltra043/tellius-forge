@@ -4,15 +4,17 @@ Built with PyQt6.
 """
 
 from pathlib import Path
-from sys import argv, exit
+import sys
 from PyQt6.uic import loadUi
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QStackedWidget, 
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QStackedWidget,
                              QMessageBox, QFileDialog)
 # from PyQt6.QtGui import QStandardItemModel
 from datetime import datetime
 import struct
 
-# resource_path.reset(relative_path)        return os.path.join(base_path, relative_path)
+
+# resource_path.reset(relative_path)
+# return os.path.join(base_path, relative_path)
 def resource_path(relative_path):
     """ Redirect referenced paths
     Redirects the paths of external files referenced by this script.
@@ -34,8 +36,10 @@ def resource_path(relative_path):
     # return os.path.join(base_path, relative_path)
     return base_path.joinpath(relative_path)
 
+
 assets_path = Path(resource_path('assets'))
 asset_ui = assets_path.joinpath('ga-simple-edits.ui')
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -96,8 +100,8 @@ def goto_123(self):
 
     if len_0_check == 0:
         QMessageBox.warning(
-            self, 
-            "Warning", 
+            self,
+            "Warning",
             'Please enter a valid output path'
         )
         return None
@@ -128,13 +132,15 @@ def goto_0(self):
     for textEdit in textEdits:
         textEdit.clear()
 
-    status_labels = [self.label_1_status, self.label_2_status, 
+    status_labels = [self.label_1_status, self.label_2_status,
                      self.label_3_status]
     for status_label in status_labels:
         status_label.setText('Status: Waiting for input.')
 
     directory_dict = directory(self)
-    input_dir, output_dir, input_pack, output_pack = list(directory_dict.values())
+    input_dir, output_dir, input_pack, output_pack = list(
+        directory_dict.values()
+        )
     if not any(output_pack.iterdir()):
         output_pack.rmdir()
 
@@ -143,11 +149,11 @@ def goto_0(self):
 def select_input(self):
     print('\nRunning start.select_input() ...')
     self.directory = QFileDialog.getExistingDirectory(
-        None, 
+        None,
         "Select Input Directory"
     )
     if self.directory:
-        # If a folder was selected (not cancelled), 
+        # If a folder was selected (not cancelled),
         # update lineEdit to selected directory
         input_dir = Path(self.directory)
         self.lineEdit_0_input.setText(str(input_dir))
@@ -164,11 +170,12 @@ def select_input(self):
 def select_output(self):
     print('\nRunning start.select_output() ...')
     self.directory = QFileDialog.getExistingDirectory(
-        None, 
+        None,
         "Select Output Directory"
     )
     if self.directory:
-        # If a folder was selected (not cancelled), update lineEdit to selected directory
+        # If a folder was selected (not cancelled),
+        # update lineEdit to selected directory
         output_dir = Path(self.directory)
         self.lineEdit_0_output.setText(str(output_dir))
     else:
@@ -211,12 +218,13 @@ def choose_edit_type(num_retries=3):
     for attempt_num in range(num_retries):
         while True:
             try:
-                edit_type = int(input('\nTypes of Edits:'
-                              '\n 1: Make additional bones invisible'
-                              '\n 2: Replace the bone in an existing transformation'
-                              '\n 3: Shift bone IDs after adding/deleting skeleton bones'
-                              '\n 4: None of the above'
-                              '\nWhich of the edits listed above would you like to make?: '))
+                prompt = ('\nTypes of Edits:'
+                          '\n 1: Make additional bones invisible'
+                          '\n 2: Replace the bone in an existing transform'
+                          '\n 3: Shift bone IDs after adding/deleting bones'
+                          '\n 4: None of the above'
+                          '\nWhich of these edits would you like to make?: ')
+                edit_type = int(input(prompt))
                 if 1 <= edit_type <= 4:
                     print(f'edit_type = {edit_type}')
                     return edit_type
@@ -226,27 +234,30 @@ def choose_edit_type(num_retries=3):
                 if attempt_num < num_retries - 1:
                     print('\nPlease enter integer values only.')
                 else:
-                    print('\nYou have reached the max number of input attempts (3).'
+                    print('\nYou reached the max number of input attempts (3).'
                           '\nRun the script again to start over')
                     raise error
 
 
-def input_bone_count(num_retries = 3):
+def input_bone_count(num_retries=3):
     for attempt_num in range(num_retries):
         try:
-            add_invis_count = int(input('\nHow many bones would you like to make invisible? '))
+            add_invis_count = int(
+                input('\nHow many bones would you like to make invisible? ')
+                )
             print(f'add_invis_count = {add_invis_count}')
             bone_ids = []
             for bone_num in range(add_invis_count):
-                bone_id = input(f'\nEnter the bone ID (hex) of the bone you want to make '
-                                    f'invisible ({bone_num+1}/{add_invis_count}): 0x')
+                bone_id = input(
+                    f'\nEnter the bone ID (hex) of the bone you want to make '
+                    f'invisible ({bone_num+1}/{add_invis_count}): 0x')
                 bone_ids.append(bone_id)
             return bone_ids
         except ValueError as error:
             if attempt_num < num_retries - 1:
                 print('\nPlease enter integer values only.')
             else:
-                print('\nYou have reached the max number of input attempts (3).'
+                print('\nYou reached the max number of input attempts (3).'
                       '\nRun the script again to start over')
                 raise error
 
@@ -254,8 +265,9 @@ def input_bone_count(num_retries = 3):
 def input_bone_swap():
     bone_id_old = input('\nWhat is the old bone ID in hex? 0x')
     bone_id_new = input('\nWhat is the new bone ID in hex? 0x')
-    print(f'Redirecting transforms from bone_id_old: 0x{bone_id_old} to bone_id_new:'
-          f' 0x{bone_id_new}')
+    print(f'Redirecting transforms from bone_id_old: 0x{bone_id_old} to'
+          f'bone_id_new: 0x{bone_id_new}'
+          )
     bone_ids = {'bone_id_old': bone_id_old, 'bone_id_new': bone_id_new}
     return bone_ids
 
@@ -284,7 +296,9 @@ def read_ga(ga_file):
         # meta_size = int(table_data[-5],16)*12
         meta_data = SOURCE.read(frame_ptr - meta_ptr)
         # meta_data =  SOURCE.read(meta_size)
-        # unused_meta_data = SOURCE.read(frame_ptr-meta_size-table_size-len(unused_table_data))
+        # unused_meta_data = SOURCE.read(
+        #     frame_ptr-meta_size-table_size-len(unused_table_data)
+        #     )
         # file_info = bytearray(file_info)
 
         '''Create dictionary'''
@@ -347,7 +361,7 @@ def read_ga(ga_file):
             ftr_ptr_3 = SOURCE.read(4)
             ftr_ptr_3 = int.from_bytes(ftr_ptr_3, "big")
 
-            if ftr_ptr_3 == 0:  # only Footer Data 2 is present (no Footer Data 1)
+            if ftr_ptr_3 == 0:  # only Footer Data 2 is present
                 ftr_type = 2
                 ftr_2_size = hdr_ptr - ftr_ptr_2
                 frame_data = data[frame_ptr:ftr_ptr_2]
@@ -419,19 +433,24 @@ def edit_invis(ga_file, data_dict: dict, misc_dict: dict, bone_ids: list):
     # meta_ptr_old = file_info[36:40]
     # frame_ptr_old = file_info[44:48]
 
-
     '''Add data for making a bone invisible'''
     for bone in bone_ids:
         bone = int(bone, 16)
         invis_table_bytes.extend(
-            bytearray([0, 0, 0, bone, 0, 0, 0, 8, 0, 0, 0, next_meta, 0, 0, 0, 3]))
+            bytearray([0, 0, 0, bone,
+                       0, 0, 0, 8,
+                       0, 0, 0, next_meta,
+                       0, 0, 0, 3]))
         next_meta += 3
         for r in range(3):
-            invis_meta_bytes += (bytearray([0, r, 15, 0, 0, 0, 0, 1]) + next_frame_start)
+            invis_meta_bytes += (
+                bytearray([0, r, 15, 0, 0, 0, 0, 1]) + next_frame_start
+                )
             invis_frame_bytes.extend([0, 0, 0, 0])
             next_frame_start_int += 1
-            next_frame_start = bytes.fromhex(hex(next_frame_start_int)[2:].zfill(8))
-
+            next_frame_start = bytes.fromhex(
+                hex(next_frame_start_int)[2:].zfill(8)
+                )
 
     '''Update Pointers & File Info'''
     table_data = data_dict['table_data']
@@ -439,7 +458,8 @@ def edit_invis(ga_file, data_dict: dict, misc_dict: dict, bone_ids: list):
     meta_data = data_dict['meta_data']
     frame_data = data_dict['frame_data']
 
-    # meta_ptr = len(file_info + table_data + invis_table_bytes + unused_table_data)
+    # meta_ptr = len(file_info + table_data
+    #                + invis_table_bytes + unused_table_data)
     meta_ptr = len(file_info + table_data + invis_table_bytes)
     frame_ptr = meta_ptr + len(meta_data + invis_meta_bytes)
     table_rows = int(len(table_data + invis_table_bytes) / 16)
@@ -495,8 +515,12 @@ def edit_invis(ga_file, data_dict: dict, misc_dict: dict, bone_ids: list):
             file_info[44:48] = struct.pack(">I", fe10_frame_ptr)
 
             # Update raw_footer internal pointers by delta
-            orig_data_end = data_dict.get('orig_data_end',
-                               data_dict.get('orig_frame_ptr', 0) + data_dict.get('orig_frame_size', 0))
+            orig_data_end = data_dict.get(
+                'orig_data_end',
+                (data_dict.get('orig_frame_ptr', 0)
+                 + data_dict.get('orig_frame_size', 0)
+                 )
+                )
             delta = new_data_end - orig_data_end
 
             if delta != 0:
@@ -505,15 +529,27 @@ def edit_invis(ga_file, data_dict: dict, misc_dict: dict, bone_ids: list):
                 if ftr_type in (1, 2, 3):
                     ptr_off = len(raw_footer) - footer_block_size + 4
                     if ptr_off + 4 <= len(raw_footer):
-                        old_val = struct.unpack(">I", raw_footer[ptr_off:ptr_off+4])[0]
-                        raw_footer[ptr_off:ptr_off+4] = struct.pack(">I", old_val + delta)
+                        old_val = struct.unpack(">I",
+                                                raw_footer[ptr_off:ptr_off+4]
+                                                )[0]
+                        raw_footer[ptr_off:ptr_off+4] = struct.pack(
+                            ">I", old_val + delta
+                            )
                 if ftr_type == 3 and len(raw_footer) >= 0x0c:
                     ptr_2_off = len(raw_footer) - 0x0c + 4
-                    old_val = struct.unpack(">I", raw_footer[ptr_2_off:ptr_2_off+4])[0]
-                    raw_footer[ptr_2_off:ptr_2_off+4] = struct.pack(">I", old_val + delta)
+                    old_val = struct.unpack(
+                        ">I", raw_footer[ptr_2_off:ptr_2_off+4]
+                        )[0]
+                    raw_footer[ptr_2_off:ptr_2_off+4] = struct.pack(
+                        ">I", old_val + delta
+                        )
                     ptr_3_off = len(raw_footer) - 0x0c + 8
-                    old_val = struct.unpack(">I", raw_footer[ptr_3_off:ptr_3_off+4])[0]
-                    raw_footer[ptr_3_off:ptr_3_off+4] = struct.pack(">I", old_val + delta)
+                    old_val = struct.unpack(
+                        ">I", raw_footer[ptr_3_off:ptr_3_off+4]
+                        )[0]
+                    raw_footer[ptr_3_off:ptr_3_off+4] = struct.pack(
+                        ">I", old_val + delta
+                        )
 
                 data_dict['raw_footer'] = raw_footer
 
@@ -569,7 +605,9 @@ def edit_shift(self, ga_file, data_dict: dict, misc_dict: dict):
             bone_int_pos = row * 4
             if table_data_ints[bone_int_pos] >= bone_id_min:
                 table_data_ints[bone_int_pos] += bone_delta
-        data_dict['table_data'] = struct.pack(f'>{int_count}I', *table_data_ints)
+        data_dict['table_data'] = struct.pack(
+            f'>{int_count}I', *table_data_ints
+            )
         return data_dict
 
     # --- Minus mode: fully remove bones and reindex ---
@@ -610,7 +648,12 @@ def edit_shift(self, ga_file, data_dict: dict, misc_dict: dict):
             continue
         if bone_id > bone_id_max:
             bone_id -= bone_delta
-        new_table_data.extend(struct.pack(">IIII", bone_id, channel_mask, new_meta_start, meta_count))
+        new_table_data.extend(struct.pack(">IIII",
+                                          bone_id,
+                                          channel_mask,
+                                          new_meta_start,
+                                          meta_count
+                                          ))
         new_meta_start += meta_count
 
     # Rebuild meta_data and frame_data
@@ -674,7 +717,12 @@ def edit_shift(self, ga_file, data_dict: dict, misc_dict: dict):
 
     # --- Update raw_footer internal pointers by delta ---
     if len(raw_footer) > 0:
-        orig_data_end = data_dict.get('orig_data_end', data_dict.get('orig_frame_ptr', 0) + data_dict.get('orig_frame_size', 0))
+        orig_data_end = data_dict.get(
+            'orig_data_end',
+            (data_dict.get('orig_frame_ptr', 0)
+             + data_dict.get('orig_frame_size', 0)
+             )
+            )
         delta = new_data_end - orig_data_end
 
         if delta != 0:
@@ -689,15 +737,27 @@ def edit_shift(self, ga_file, data_dict: dict, misc_dict: dict):
                 if ftr_type in (1, 2, 3):
                     ptr_off = len(raw_footer) - footer_block_size + 4
                     if ptr_off + 4 <= len(raw_footer):
-                        old_val = struct.unpack(">I", raw_footer[ptr_off:ptr_off+4])[0]
-                        raw_footer[ptr_off:ptr_off+4] = struct.pack(">I", old_val + delta)
+                        old_val = struct.unpack(
+                            ">I", raw_footer[ptr_off:ptr_off+4]
+                            )[0]
+                        raw_footer[ptr_off:ptr_off+4] = struct.pack(
+                            ">I", old_val + delta
+                            )
                 if ftr_type == 3 and len(raw_footer) >= 0x0c:
                     ptr_2_off = len(raw_footer) - 0x0c + 4
-                    old_val = struct.unpack(">I", raw_footer[ptr_2_off:ptr_2_off+4])[0]
-                    raw_footer[ptr_2_off:ptr_2_off+4] = struct.pack(">I", old_val + delta)
+                    old_val = struct.unpack(
+                        ">I", raw_footer[ptr_2_off:ptr_2_off+4]
+                        )[0]
+                    raw_footer[ptr_2_off:ptr_2_off+4] = struct.pack(
+                        ">I", old_val + delta
+                        )
                     ptr_3_off = len(raw_footer) - 0x0c + 8
-                    old_val = struct.unpack(">I", raw_footer[ptr_3_off:ptr_3_off+4])[0]
-                    raw_footer[ptr_3_off:ptr_3_off+4] = struct.pack(">I", old_val + delta)
+                    old_val = struct.unpack(
+                        ">I", raw_footer[ptr_3_off:ptr_3_off+4]
+                        )[0]
+                    raw_footer[ptr_3_off:ptr_3_off+4] = struct.pack(
+                        ">I", old_val + delta
+                        )
 
             data_dict['raw_footer'] = raw_footer
 
@@ -715,7 +775,9 @@ def edit_shift(self, ga_file, data_dict: dict, misc_dict: dict):
         last_entry = new_meta_data[-12:]
         last_kf_count = struct.unpack(">H", last_entry[6:8])[0]
         last_fd_start = struct.unpack(">I", last_entry[8:12])[0]
-        misc_dict['next_frame_start'] = struct.pack(">I", last_fd_start + last_kf_count)
+        misc_dict['next_frame_start'] = struct.pack(
+            ">I", last_fd_start + last_kf_count
+            )
 
     # Keep ftr_ptr_1 for backward compat (FE9 convention)
     if not is_fe10 and len(raw_footer) > 0:
@@ -736,10 +798,17 @@ def write_ga(ga_file, data_dict: dict, misc_dict: dict, output_folder: Path):
     orig_frame_size = data_dict.get('orig_frame_size', -1)
     # Invis additions stored in separate keys by edit_invis — detect them
     has_invis = any(len(data_dict.get(k, bytearray([]))) > 0
-                    for k in ('invis_table_bytes', 'invis_meta_bytes', 'invis_frame_bytes'))
+                    for k in ('invis_table_bytes',
+                              'invis_meta_bytes',
+                              'invis_frame_bytes'
+                              ))
 
     with open(Path(output_path), "wb+") as DEST:
-        if len(raw_footer) > 0 and len(frame_data) == orig_frame_size and not has_invis:
+        if (
+            len(raw_footer) > 0
+            and len(frame_data) == orig_frame_size
+            and not has_invis
+        ):
             # Raw footer path: byte-for-byte footer preservation
             DEST.write(data_dict['file_info'])
             DEST.write(data_dict['table_data'])
@@ -763,14 +832,17 @@ def write_ga(ga_file, data_dict: dict, misc_dict: dict, output_folder: Path):
 
 
 def run_1_invis(self):
-    print(f'Running Invis_1 Edits ...')
+    print('Running Invis_1 Edits ...')
     directory_dict = directory(self)
-    input_dir, output_dir, input_pack, output_pack = list(directory_dict.values())
+    input_dir, output_dir, input_pack, output_pack = list(
+        directory_dict.values()
+        )
 
     bone_ids = self.lineEdit_1_bone_ids.text()
     bone_ids = bone_ids.split()
 
-    input_paths = [file for file in input_dir.iterdir() if file.suffix == '.ga']
+    input_paths = [file for file in input_dir.iterdir()
+                   if file.suffix == '.ga']
     for path in input_pack.iterdir():
         if path.suffix == '.ga':
             input_paths.append(path)
@@ -796,15 +868,19 @@ def run_1_invis(self):
 
 
 def run_2_swap(self):
-    print(f'Running Swap_2 Edits ...')
+    print('Running Swap_2 Edits ...')
     directory_dict = directory(self)
-    input_dir, output_dir, input_pack, output_pack = list(directory_dict.values())
+    input_dir, output_dir, input_pack, output_pack = list(
+        directory_dict.values()
+        )
 
     bone_id_old = self.lineEdit_2_bone_orig.text()
     bone_id_new = self.lineEdit_2_bone_new.text()
     bone_ids = {'bone_id_old': bone_id_old, 'bone_id_new': bone_id_new}
 
-    input_paths = [file for file in input_dir.iterdir() if file.suffix == '.ga']
+    input_paths = [file for file in input_dir.iterdir()
+                   if file.suffix == '.ga'
+                   ]
     for path in input_pack.iterdir():
         if path.suffix == '.ga':
             input_paths.append(path)
@@ -830,11 +906,15 @@ def run_2_swap(self):
 
 
 def run_3_shift(self):
-    print(f'Running Shift_3 Edits ...')
+    print('Running Shift_3 Edits ...')
     directory_dict = directory(self)
-    input_dir, output_dir, input_pack, output_pack = list(directory_dict.values())
+    input_dir, output_dir, input_pack, output_pack = list(
+        directory_dict.values()
+        )
 
-    input_paths = [file for file in input_dir.iterdir() if file.suffix == '.ga']
+    input_paths = [file for file in input_dir.iterdir()
+                   if file.suffix == '.ga'
+                   ]
     for path in input_pack.iterdir():
         if path.suffix == '.ga':
             input_paths.append(path)
@@ -855,9 +935,14 @@ def run_3_shift(self):
 
 def set_status(self):
     current_datetime = datetime.now().strftime("%H:%M:%S")
-    status_labels = [self.label_1_status, self.label_2_status, self.label_3_status]
+    status_labels = [self.label_1_status,
+                     self.label_2_status,
+                     self.label_3_status
+                     ]
     for status_label in status_labels:
-        status_label.setText(f'Finished writing files at time {current_datetime}')
+        status_label.setText(
+            f'Finished writing files at time {current_datetime}'
+            )
     print('Completed writing files!')
 
 
@@ -872,10 +957,14 @@ def show_help():
 
 def main():
     directory_dict = directory()
-    input_dir, output_dir, input_pack, output_pack = list(directory_dict.values())
+    input_dir, output_dir, input_pack, output_pack = list(
+        directory_dict.values()
+        )
     if directory_dict:
         edit_type = choose_edit_type()
-        input_paths = [file for file in input_dir.iterdir() if file.suffix == '.ga']
+        input_paths = [file for file in input_dir.iterdir()
+                       if file.suffix == '.ga'
+                       ]
         for path in input_pack.iterdir():
             if path.suffix == '.ga':
                 input_paths.append(path)
@@ -897,7 +986,7 @@ def main():
                 # for i in range(len(data_dict)):
                 #     print(f'{data_keys[i]} length: {len(data_values[i])}')
 
-        elif edit_type == 2:    # Edit: Replace the bone in an existing transformation
+        elif edit_type == 2:    # Replace the bone in an existing transform
             bone_ids = input_bone_swap()
             for ga_file in input_paths:
                 data_dict, misc_dict = read_ga(ga_file)
@@ -917,12 +1006,13 @@ def main():
 
 
 def main_ui():
-    args = argv[1:]
-    if len(args) == 0 or args[0] in ("-h", "--help"):
-        show_help()
-        exit(0 if args and args[0] in ("-h", "--help") else 1)
+    args = sys.argv[1:]
+    if len(args) != 0:
+        if args[0] in ("-h", "--help"):
+            show_help()
+            sys.exit(0 if args and args[0] in ("-h", "--help") else 1)
 
-    app = QApplication(argv)
+    app = QApplication(sys.argv)
     main_window = MainWindow()
     widget = QStackedWidget()
     widget.addWidget(main_window)

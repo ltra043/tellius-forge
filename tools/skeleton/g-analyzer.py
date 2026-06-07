@@ -219,12 +219,13 @@ def show_help():
 def main():
     if len(sys.argv) < 2:
         print("You must provide a .g skeleton file as an argument.")
+        print("Use -h or --help for usage instructions.\n")
         return
     
     args = sys.argv[1:]
-    if len(args) == 0 or args[0] in ("-h", "--help"):
+    if args[0] in ("-h", "--help"):
         show_help()
-        sys.exit(0 if args and args[0] in ("-h", "--help") else 1)
+        sys.exit(0 if args[0] in ("-h", "--help") else 1)
 
     filepath = sys.argv[1]
 
