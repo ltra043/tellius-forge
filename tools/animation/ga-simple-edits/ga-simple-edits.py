@@ -4,7 +4,7 @@ Built with PyQt6.
 """
 
 from pathlib import Path
-from sys import exit, argv
+from sys import argv, exit
 from PyQt6.uic import loadUi
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QStackedWidget, 
                              QMessageBox, QFileDialog)
@@ -861,6 +861,15 @@ def set_status(self):
     print('Completed writing files!')
 
 
+def show_help():
+    print("Launch GUI for simple editing of .ga animation files.")
+    print("Current editing options include:")
+    print("\t1. Make additional bones invisible.")
+    print("\t2. Replace the bone in an existing transformation")
+    print("\t3. Fix bone IDs after adding/deleting skeleton bones.")
+    print()
+
+
 def main():
     directory_dict = directory()
     input_dir, output_dir, input_pack, output_pack = list(directory_dict.values())
@@ -908,6 +917,11 @@ def main():
 
 
 def main_ui():
+    args = argv[1:]
+    if len(args) == 0 or args[0] in ("-h", "--help"):
+        show_help()
+        exit(0 if args and args[0] in ("-h", "--help") else 1)
+
     app = QApplication(argv)
     main_window = MainWindow()
     widget = QStackedWidget()

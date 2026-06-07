@@ -209,14 +209,22 @@ def generate_report(filepath, bones, true_world, bone_count):
     return '\n'.join(lines), report_name
 
 
+def show_help():
+    print("Usage: python g-analyzer.py <skeleton_file.g>")
+    print()
+    print("Reads a .g skeleton file from FE9/FE10 and generates a markdown report.")
+    print()
+
+
 def main():
     if len(sys.argv) < 2:
-        print("Drag a .g skeleton file onto this script.")
-        try:
-            input("Press Enter to exit...")
-        except (EOFError, KeyboardInterrupt):
-            pass
+        print("You must provide a .g skeleton file as an argument.")
         return
+    
+    args = sys.argv[1:]
+    if len(args) == 0 or args[0] in ("-h", "--help"):
+        show_help()
+        sys.exit(0 if args and args[0] in ("-h", "--help") else 1)
 
     filepath = sys.argv[1]
 
