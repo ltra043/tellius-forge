@@ -140,11 +140,23 @@ def find_ga_files(target):
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: Drag & drop .ga file(s) or folder(s) onto this script.")
-        print("       All .ga files (including subfolders) will be processed.")
+    args = []
+    args = sys.argv[1:]
+    if len(args) > 0 and args[0] in ("-h", "--help"):
+        print("Usage: python ga-sort-bones.py <animation.ga|folder>")
+        print("Purpose: Reorganizes .ga animation files so bones are sorted by bone_id (ascending). "
+              "Preserves all data and only reorders bone table, channel data, and fcurve data in-place.")
+        print("About Input:")
+        print("\tIf a .ga file is provided, it will be processed.")
+        print("\tIf a folder is provided, all .ga files in the folder and subfolders will be processed.")
         print()
-        input("Press Enter to exit...")
+        return
+
+   
+    if len(sys.argv) < 2:
+        print("Usage: python ga-sort-bones.py <animation.ga|folder>")
+        print("Use -h or --help for more details.")
+        print()
         return
 
     targets = []

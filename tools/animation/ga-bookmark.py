@@ -619,10 +619,25 @@ def process_ga(filepath, out_path):
 
 
 def main():
+    args = []
     args = sys.argv[1:]
-
     if len(args) == 0 or args[0] == "-o":
         print("Usage: py ga_bookmark.py <animation.ga|folder> [-o output.hexbm|output_folder]")
+        print("Use -h or --help for more details.")
+        sys.exit(1)
+    
+    if args[0] in ("-h", "--help"):
+        print("Usage: py ga_bookmark.py <animation.ga|folder> [-o output.hexbm|output_folder]")
+
+        print("About Input Arguments:")
+        print("\tIf a .ga file is provided, outputs a .hexbm bookmark file for that animation.")
+        print("\tIf a folder is provided, outputs a folder containing "
+        ".hexbm bookmark files for each .ga in the input folder.")
+
+        print("About Output Location:")
+        print("\tBy default, output is created in the parent directory of the input.")
+        print("\tUse the -o option to specify a different output file or folder.")
+        print()
         sys.exit(1)
 
     input_path = args[0]
