@@ -39,7 +39,7 @@ Fire Emblem assets, Fire Emblem model format, FE9 skeleton format, FE10 skeleton
 1. [FE10 ImHex bookmarks](https://drive.google.com/file/d/1wBQgxkHshERlykjIj5WD58jmAeRpy2Wl/view?usp=drive_link) for fe10 `fighter3_n’s skeleton.g`  
 2. [Skeleton file viewer](https://docs.google.com/spreadsheets/d/1zbN7nSeyl0lY_XA7-t0zFUdaRjoDEF3c_laifMrM5Pc/edit?gid=1433193727#gid=1433193727&range=A1) : spreadsheet that parses and organizes skeleton data
 3. [g-analyzer.py](../../tools/skeleton/g-analyzer.py): parses skeleton data and creates detailed summary
-4. [Tellius Forge Blender plugin](https://github.com/ltra043/tellius-forge/releases/latest): suuports import, modification, and export of FE9/FE10 skeleton files.
+4. [Tellius Forge Blender plugin](https://github.com/ltra043/tellius-forge/releases/latest): supports import, modification, and export of FE9/FE10 skeleton files.
 5. [App for Tellius Unit Map Model Porting](https://github.com/ltra043/tellius-unit-model-ports): supports FE10 to FE9 porting  
 
 </details>
@@ -195,7 +195,7 @@ The 32-bit `flags` field at `+12` is an **Intelligent Systems-proprietary bitfie
 **The names and semantics in this table are our best interpretation and are speculative.** The operation-codes and stack flags are inferred from hierarchy patterns and the NSBMD SBC precedent, but have not been verified against the actual game engine.
 
 ### 4.2 Class A vs Class B
-Bones can be broadly sorted into two categories: **Class A (World Position)** and **Class B (Local Transorm)**. These classifications are based primarily on observed flag patterns and how position data is stored within the skeleton. 
+Bones can be broadly sorted into two categories: **Class A (World Position)** and **Class B (Local Transform)**. These classifications are based primarily on observed flag patterns and how position data is stored within the skeleton. 
 
 Class B bones exhibit more variation than Class A bones, and aspects of their position and animation behavior remain only partially understood.
 
@@ -420,7 +420,7 @@ Bone names enclosed in underscores (e.g., `_sw1_`, `_s1_`, `_s2_`, `_s_`) have *
 - `body`, `chest`, or similarly named bones usually correspond to the torso. It is typically the parent of all bones in the upper half of the body.
 - Infantry skeletons typically have **3 bones per arm** (shoulder, forearm, hand) and **3 bones per leg** (thigh, calf, foot), plus one non-influencing bone at the front of each foot (`_s1_` or `_s2_`). 
     - An extra non-influencing hand bone (`_r_hand_` or similar name) is sometimes present. 
-    - There may be additional bones like `L_skirt` interrupting the sequencing and relationships bewteen leg bones.
+    - There may be additional bones like `L_skirt` interrupting the sequencing and relationships between leg bones.
 
 ### 7.6 Laterality
 

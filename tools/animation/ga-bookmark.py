@@ -36,7 +36,7 @@ C_FOOTER1  = grey_light
 # C_FCURVE   = make_color(170, 170, 170)   # 0xB3AAAAAA
 # C_FOOTER1  = make_color(152, 152, 152)   # 0xB3989898
 
-# Detail sub-bookmark colours (shared FE9/FE10)
+# Detail sub-bookmark colors (shared FE9/FE10)
 C_HDR_PTR   = yellow
 C_GAME_ID   = pink
 C_START_FR  = green
@@ -50,12 +50,12 @@ C_FTR_PTR1  = blue
 # FE9 Footer Data 1 rainbow (7-color)
 FD1_RAINBOW = [red, orange, yellow, green, blue, purple, pink]
 
-# ---- FE10-specific colours (from "fe10 ftr1&2.hexbm") ----
+# ---- FE10-specific colors (from "fe10 ftr1&2.hexbm") ----
 C_FD1_SECTION = grey_dark
 C_FD2_SECTION = grey_light
 C_PADDING_FE10 = grey_dark
 
-# FE10 Footer Pointer colours
+# FE10 Footer Pointer colors
 C_FTR_ID_1  = red
 C_FTR_PTR_1 = orange
 C_FTR_ID_2  = blue_light
@@ -65,7 +65,7 @@ C_FTR_PTR_3 = pink
 # FE10 FD1 4-colour entry cycle (yellow, pink, red, orange)
 FD1_FE10_CYCLE = [yellow, pink, red, orange]
 
-# FE10 FD1 non-entry colours (exact from reference)
+# FE10 FD1 non-entry colors (exact from reference)
 C_FD1_FE10_ENTRIES   = red
 C_FD1_FE10_INDEXES   = orange
 
@@ -73,7 +73,7 @@ C_FD1_FE10_INDEXES   = orange
 # Entries start from cycle[2]; write-up cycles [green, light blue, medium blue, purple]
 FD2_FE10_CYCLE = [green, blue_light, blue, purple]
 
-# FE10 FD2 non-entry colours (exact from reference)
+# FE10 FD2 non-entry colors (exact from reference)
 C_FD2_FE10_ENTRIES   = green
 C_FD2_FE10_INDEXES   = blue_light
 

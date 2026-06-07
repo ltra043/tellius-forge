@@ -92,7 +92,7 @@ The goal is to have one armature and multiple meshes parented to it.
    * **Body Filename / Skeleton Filename** — what to name the output files. This defaults to body and skeleton, which is what all ymu model files must be named. File extensions will be appended if they are not included.
    * **Reference Skeleton** — input the path to the main original .g file for correct bone ordering. This should autofill based on data stored from the original import.
    * **Bone Order Options (2):** Choose whether to **incorporate added bones into the skeleton in Blender Hierarchy order**, or attempt to **preserve the original order with new bones appended**. Some skeletons may require the Blender Hierarchy order, though this will temporarily break all existing animations for the model.
-   * **Vertex Color Options (3):** Vertex colors act as lighting multiplier. Leave as “*From Blender*” to use the original mesh’s lighting data (applied upon mesh import) or to use your own recolored Vertex Paint colors. Select “*White*” to set maximum lighting and "*None*" to use unmultiplied game lighting.
+   * **Vertex Color Options (3):** Vertex colors act as lighting multiplier. Leave as “*From Blender*” to use the original mesh’s lighting data (applied upon mesh import) or to use your own recolored Vertex Paint colors. Select “*White*” to set maximum lighting and "*None*" to use non-multiplied game lighting.
 4. Click **Export** — the plugin writes both `.gs` and `.g` files.
 
 ---

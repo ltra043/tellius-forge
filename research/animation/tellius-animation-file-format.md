@@ -366,7 +366,7 @@ FE10 has 4 possible combinations.
   Other Bookmarks: See <a href="#footer-data-2">Footer Data 2</a> below</em>
 </p>
 
-**Identiying Footer Pointer 1 and 2**
+**Identifying Footer Pointer 1 and 2**
 * The pointer in File bytes 0x00 - 0x03 points to 0x0c bytes before the end of the file.   
   * The 4-byte pointer target has a value of either 0x00 or 0x05  
   * This value can serve as an identifier for a Footer Data sub-section  (**Footer ID**)

@@ -21,7 +21,7 @@ The written guides are intended to supplement the tutorial videos and serve as a
   
 Types:
 - <b>Fundamental:</b> Instructional guides that cover foundational processes and core workflows.
-- <b>Advanced:</b> Instuctional guides that cover more advanced topics. These walk through optional modifications that are not aboslutely necessary to learn. 
+- <b>Advanced:</b> Instructional guides that cover more advanced topics. These walk through optional modifications that are not absolutely necessary to learn. 
 - <b>Reference:</b> Meant to be read as needed and may be referred to by other documents.
 
 Naming Conventions:

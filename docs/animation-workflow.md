@@ -48,7 +48,7 @@ The goal of this workflow is to transfer animation from a reference model onto a
 4. **Clean keyframes & channels:**
     1. In Pose Mode with all bones selected, open the **Graph Editor**. Make sure to enable sliders (View > Show Sliders) and Normalize (toggle button at top) so you can see the curves. 
     2. Select all channels (press **A** in the left sidebar list), select all keyframes (press **A** over the graph), then **Clean keyframes** (*Key > Clean keyframes*). Leave threshold at default and check **Clean Channels**. 
-    3. Click through the remaining channels with slider values near 0 and delete them if the curve is static. This removes unneccesary channels.
+    3. Click through the remaining channels with slider values near 0 and delete them if the curve is static. This removes unnecessary channels.
     4. **Decimate rotation** (optional): If the baked curves are dense, reduce keyframe count with **Key > Decimate (Ratio)** at 30–50%. Be careful to avoid strong decimation that changes the curve shape (especially for location channels).
 #### D. Export the animation
 1. **Change the name of the baked action** before export. 
@@ -85,7 +85,7 @@ After baking one animation, repeat for the next:
 ---
 ## 3. Animations from Scratch
 
-> **Note**: Creating entirely new animations (not copied from an existing .ga) has had limited testing. The export should produce valid files, but in-game behaviour with footers, frame timing, and variable bone flags is not yet confirmed. Always test exported animations in-game.
+> **Note**: Creating entirely new animations (not copied from an existing .ga) has had limited testing. The export should produce valid files, but in-game behavior with footers, frame timing, and variable bone flags is not yet confirmed. Always test exported animations in-game.
 
 #### A. Setup
 

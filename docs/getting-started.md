@@ -26,7 +26,7 @@ You will  need:
 |**FE9 & FE10 Body (.gs)**|**Imports just a `.gs` body file** as a mesh. No skeleton, no skinning. Partial compatibility (some `ymu` & `zmap`).|
 |**FE9 & FE10 Skeleton (.g)**|**Imports just a `.g` skeleton** as an armature. Partial compatibility (some `ymu` & `zmap`).|
 |**FE9 & FE10 Body + Skeleton (.gs + .g)**|**Imports both the body and skeleton** at once. The plugin automatically searches for a corresponding `.g` file in the selected mesh's directory. Partial compatibility (some `ymu` & `zmap`). **This is the option you'll use most.**|
-|**FE9 & FE10 Animation (.ga)**|**Imports animation files** onto an existing armature. Not fully compatible for all `ymu` skeletons or `yme` effects. Untested with `zu` battle animations. *See [Animation Compatibiilty](./animation-compatibility.md) for list of compatible models.* |
+|**FE9 & FE10 Animation (.ga)**|**Imports animation files** onto an existing armature. Not fully compatible for all `ymu` skeletons or `yme` effects. Untested with `zu` battle animations. *See [Animation Compatibility](./animation-compatibility.md) for list of compatible models.* |
 
 When importing Body + Skeleton, the plugin names the armature after the model (e.g., `lord`), the armature data as `lord_skeleton`, and the mesh as `lord_body`.
 
