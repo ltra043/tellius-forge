@@ -79,13 +79,17 @@ This project primarily targets overworld (`ymu/`) models and animations from FE9
 #### For Windows Users (Simplest Method):  
 1. Download the [latest release](https://github.com/ltra043/tellius-forge/releases/latest) of the Blender add-on `tellius-forge.py`. 
 2. Download the necessary Windows executables `tellius-forge-toolkit.7z` and extract the contents.
-    1. **Important!** Keep all contents of tellius-forge-toolkit.7z in the directories as they were packaged.
+    > **IMPORTANT!**  
+    > Keep all contents of `tellius-forge-toolkit.7z` in their directories as they were packaged. The relative locations of files and directories should not be modified.
 
 #### For Non-Windows Users (and Command-Line Users):  
 
 Download the Tools & Source Code
-1. Download the source code folders for the required tools: [ga_simple_edits](./tools/animation/ga_simple_edits) and [gs_texture_edits](./tools/body/gs_texture_edits).
-2. Ensure you have Python installed on your system.
+1. Ensure you have Python installed on your system.
+2. Download the source code folders for the required tools: [ga_simple_edits](./tools/animation/ga_simple_edits) and [gs_texture_edits](./tools/body/gs_texture_edits).
+    1. Copy and paste a GitHub directory URL into [Download Directory Github](https://download-directory.github.io/) or [DownGit](https://downgit.github.io/#/home) to download the entire directory.  
+    > **IMPORTANT!**  
+    > A main python script is bundled with the files that are necessary for proper functioning. This could include `requirements.txt`, `assets/` folder, or `modules/` folder. The relative location of the main script and these dependencies should not be modified.
 
 Install Dependencies
 <ol type="1">
@@ -121,7 +125,7 @@ Install Dependencies
 </li>
 </ol>
 
-#### All Users Blender Add-on Installation
+#### All Users Blender Add-on Installation:
 1. In Blender, go to **Edit > Preferences > Add-ons**.
 2. Click the dropdown arrow (**▼**) at the top-right and select **Install from Disk...**.
 3. Navigate to `tellius-forge.py` and select it to install.
