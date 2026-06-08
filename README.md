@@ -84,7 +84,7 @@ This project primarily targets overworld (`ymu/`) models and animations from FE9
 #### For Non-Windows Users (and Command-Line Users):  
 
 Download the Tools & Source Code
-1. Download the source code folders for the required tools: [ga_simple_edits](./tools/animation/ga_simple_edits) and [gs_texture_edits](.tools/body/gs_texture_edits).
+1. Download the source code folders for the required tools: [ga_simple_edits](./tools/animation/ga_simple_edits) and [gs_texture_edits](./tools/body/gs_texture_edits).
 2. Ensure you have Python installed on your system.
 
 Install Dependencies
