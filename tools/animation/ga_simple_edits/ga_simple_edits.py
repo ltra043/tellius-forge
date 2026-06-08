@@ -11,10 +11,11 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QStackedWidget,
 # from PyQt6.QtGui import QStandardItemModel
 from datetime import datetime
 import struct
+from modules.ga_sort_bones import find_ga_files, process_ga
 
 
 # resource_path.reset(relative_path)
-# return os.path.join(base_path, relative_path)
+# return base_path.joinpath(relative_path)
 def resource_path(relative_path):
     """ Redirect referenced paths
     Redirects the paths of external files referenced by this script.
@@ -38,7 +39,7 @@ def resource_path(relative_path):
 
 
 assets_path = Path(resource_path('assets'))
-asset_ui = assets_path.joinpath('ga-simple-edits.ui')
+asset_ui = assets_path.joinpath('ga_simple_edits.ui')
 
 
 class MainWindow(QMainWindow):
@@ -52,7 +53,7 @@ class MainWindow(QMainWindow):
         # self.selected = []
 
         # navigation buttons
-        self.button_0_next.clicked.connect(lambda: goto_123(self))
+        self.button_0_next.clicked.connect(lambda: goto_next(self))
         self.button_1_back.clicked.connect(lambda: goto_0(self))
         self.button_2_back.clicked.connect(lambda: goto_0(self))
         self.button_3_back.clicked.connect(lambda: goto_0(self))
@@ -66,22 +67,34 @@ class MainWindow(QMainWindow):
         self.button_2_run.clicked.connect(lambda: run_2_swap(self))
         self.button_3_run.clicked.connect(lambda: run_3_shift(self))
 
+        # Radio buttons
+        self.radio_4.toggled.connect(lambda: select_4(self))
 
-def goto_123(self):
+
+def goto_next(self):
     """ Confirm valid input & output selection
         - Check if input and output are existing directories and that
           neither field is empty.
         - Reset config variables in case data remains from previous use.
     """
     directory_dict = directory(self)    # create output dirs if they DNE
-    print('\nRunning navigate.goto_123() ...')
+    print('\nRunning navigate.goto_next() ...')
     if directory_dict is None:
         QMessageBox.warning(self, "Warning",
                             'Please enter a valid output path')
         return None
-    input_dir, output_dir, input_pack, output_pack = (
+
+    input_dir, output_dir, input_pack, output_pack, input_file = (
         list(directory_dict.values())
     )
+    # if self.radio_4.isChecked():
+    #     input_dir, output_dir, input_pack, output_pack, input_file = (
+    #         list(directory_dict.values())
+    #     )
+    # else:
+    #     input_dir, output_dir, input_pack, output_pack, input_file = (
+    #         list(directory_dict.values())
+    #     )
     input_len = len(self.lineEdit_0_input.text())
     output_len = len(self.lineEdit_0_output.text())
     len_0_check = input_len * output_len
@@ -90,15 +103,15 @@ def goto_123(self):
     if not input_dir.exists():
         QMessageBox.warning(self, "Warning", 'Please enter a valid input path')
         return None
-    elif not input_pack.exists():
-        QMessageBox.warning(
-            self,
-            "Warning",
-            'Please decompress pack.cmp using Lumina to continue'
-        )
-        return None
+    # elif not input_pack.exists():
+        # QMessageBox.warning(
+        #     self,
+        #     "Warning",
+        #     'Please decompress pack.cmp using Lumina to continue'
+        # )
+        # return None
 
-    if len_0_check == 0:
+    if len_0_check == 0 and not self.radio_4.isChecked():
         QMessageBox.warning(
             self,
             "Warning",
@@ -115,6 +128,9 @@ def goto_123(self):
     elif self.radio_3.isChecked():
         self.stackedWidget.setCurrentWidget(self.Shift_3)
         return directory_dict
+    elif self.radio_4.isChecked():
+        print("Running organize edit ...")
+        run_4_organize(self, directory_dict)
     else:
         QMessageBox.warning(self, "Warning", 'Please select an edit type')
         return None
@@ -138,20 +154,60 @@ def goto_0(self):
         status_label.setText('Status: Waiting for input.')
 
     directory_dict = directory(self)
-    input_dir, output_dir, input_pack, output_pack = list(
+    input_dir, output_dir, input_pack, output_pack, _ = list(
         directory_dict.values()
         )
-    if not any(output_pack.iterdir()):
-        output_pack.rmdir()
+    clean_pack(self)
+
+
+def select_4(self):
+    print("Running select_4(self) ...")
+    if self.radio_4.isChecked():
+        self.lineEdit_0_output.setEnabled(False)
+        self.button_0_output.setEnabled(False)
+        self.button_0_input.setText("Select Input File or Folder")
+        self.button_0_output.setText(
+            "Output will overwrite input for this edit"
+            )
+        self.button_0_next.setText("Run Organize Edit")
+        self.lineEdit_0_input.setToolTip(
+            "Choose an input .ga file or a folder containing .ga files"
+            )
+        self.lineEdit_0_output.setToolTip(
+            "Output will overwrite input for this edit"
+            )
+
+    if not self.radio_4.isChecked():
+        self.lineEdit_0_output.setEnabled(True)
+        self.button_0_output.setEnabled(True)
+        self.button_0_input.setText("Select Input Folder")
+        self.button_0_output.setText("Select Output Folder")
+        self.button_0_next.setText("Next")
+        self.lineEdit_0_input.setToolTip(
+            "Choose an input ymu model folder containing animations"
+            )
+        self.lineEdit_0_output.setToolTip(
+            "Choose an output folder to place edited animations"
+            )
 
 
 # select_input(self)      return: None
 def select_input(self):
     print('\nRunning start.select_input() ...')
-    self.directory = QFileDialog.getExistingDirectory(
-        None,
-        "Select Input Directory"
-    )
+
+    if self.radio_4.isChecked():
+        self.directory, _ = QFileDialog.getOpenFileName(
+            None,
+            "Select Input File or Folder",
+            filter="GA Files (*.ga)"
+        )
+
+    else:
+        self.directory = QFileDialog.getExistingDirectory(
+            None,
+            "Select Input Directory"
+        )
+
     if self.directory:
         # If a folder was selected (not cancelled),
         # update lineEdit to selected directory
@@ -190,7 +246,14 @@ def directory(self):
     # input_dir = Path(input('What is the path to the input directory? '))
     # output_dir = Path(input('\nWhat is the path to the output directory? '))
     input_dir = Path(self.lineEdit_0_input.text())
-    output_dir = Path(self.lineEdit_0_output.text())
+    input_file = ""
+    if self.radio_4.isChecked():
+        if input_dir.is_file():
+            input_file = input_dir
+            input_dir = Path(input_dir.parent)
+        output_dir = input_dir
+    else:
+        output_dir = Path(self.lineEdit_0_output.text())
     input_pack = input_dir.joinpath('pack')
     output_pack = output_dir.joinpath('pack')
 
@@ -202,6 +265,8 @@ def directory(self):
             output_dir.mkdir()
         if not output_pack.exists():
             output_pack.mkdir()
+        if not input_pack.exists():
+            input_pack.mkdir()
     except FileNotFoundError:
         return None
 
@@ -209,8 +274,10 @@ def directory(self):
         'input_dir': input_dir,
         'output_dir': output_dir,
         'input_pack': input_pack,
-        'output_pack': output_pack
+        'output_pack': output_pack,
+        'input_file': input_file
     }
+
     return directory_dict
 
 
@@ -222,7 +289,7 @@ def choose_edit_type(num_retries=3):
                           '\n 1: Make additional bones invisible'
                           '\n 2: Replace the bone in an existing transform'
                           '\n 3: Shift bone IDs after adding/deleting bones'
-                          '\n 4: None of the above'
+                          '\n 4: Organize data by bone ID (ascending)'
                           '\nWhich of these edits would you like to make?: ')
                 edit_type = int(input(prompt))
                 if 1 <= edit_type <= 4:
@@ -834,7 +901,7 @@ def write_ga(ga_file, data_dict: dict, misc_dict: dict, output_folder: Path):
 def run_1_invis(self):
     print('Running Invis_1 Edits ...')
     directory_dict = directory(self)
-    input_dir, output_dir, input_pack, output_pack = list(
+    input_dir, output_dir, input_pack, output_pack, input_file = list(
         directory_dict.values()
         )
 
@@ -857,8 +924,7 @@ def run_1_invis(self):
             write_ga(ga_file, data_dict, misc_dict, output_dir)
 
     set_status(self)
-    if not any(output_pack.iterdir()):
-        output_pack.rmdir()
+    clean_pack(self)
 
     # print(f'len(data_dict) = {len(data_dict)}')
     # data_values = list(data_dict.values())
@@ -870,7 +936,7 @@ def run_1_invis(self):
 def run_2_swap(self):
     print('Running Swap_2 Edits ...')
     directory_dict = directory(self)
-    input_dir, output_dir, input_pack, output_pack = list(
+    input_dir, output_dir, input_pack, output_pack, input_file = list(
         directory_dict.values()
         )
 
@@ -895,8 +961,7 @@ def run_2_swap(self):
             write_ga(ga_file, data_dict, misc_dict, output_dir)
 
     set_status(self)
-    if not any(output_pack.iterdir()):
-        output_pack.rmdir()
+    clean_pack(self)
 
     # print(f'len(data_dict) = {len(data_dict)}')
     # data_values = list(data_dict.values())
@@ -908,7 +973,7 @@ def run_2_swap(self):
 def run_3_shift(self):
     print('Running Shift_3 Edits ...')
     directory_dict = directory(self)
-    input_dir, output_dir, input_pack, output_pack = list(
+    input_dir, output_dir, input_pack, output_pack, input_file = list(
         directory_dict.values()
         )
 
@@ -929,8 +994,41 @@ def run_3_shift(self):
             write_ga(ga_file, data_dict, misc_dict, output_dir)
 
     set_status(self)
-    if not any(output_pack.iterdir()):
-        output_pack.rmdir()
+    clean_pack(self)
+
+
+def run_4_organize(self, directory_dict):
+    print('Running Organize_4 Edits ...')
+    input_dir, output_dir, input_pack, output_pack, input_file = list(
+        directory_dict.values()
+        )
+
+    if len(str(input_file)) > 0:
+        input_path = str(input_file)
+    else:
+        input_path = str(input_dir)
+
+    targets = []
+    targets.extend(find_ga_files(input_path))
+
+    if not targets:
+        print("No .ga files found.")
+        return
+
+    ok = 0
+    fail = 0
+    for fp in targets:
+        try:
+            process_ga(fp)
+            ok += 1
+        except Exception as e:
+            print(f"  FAIL: {fp}")
+            print(f"        {e}")
+            fail += 1
+
+    print(f"\nDone. {ok} OK, {fail} failed.")
+    # set_status(self)
+    clean_pack(self)
 
 
 def set_status(self):
@@ -946,6 +1044,18 @@ def set_status(self):
     print('Completed writing files!')
 
 
+def clean_pack(self):
+    directory_dict = directory(self)
+    input_dir, output_dir, input_pack, output_pack, input_file = list(
+        directory_dict.values()
+        )
+
+    if not any(input_pack.iterdir()):
+        input_pack.rmdir()
+    if not any(output_pack.iterdir()):
+        output_pack.rmdir()
+
+
 def show_help():
     print("Launch GUI for simple editing of .ga animation files.")
     print("Current editing options include:")
@@ -957,7 +1067,7 @@ def show_help():
 
 def main():
     directory_dict = directory()
-    input_dir, output_dir, input_pack, output_pack = list(
+    input_dir, output_dir, input_pack, output_pack, input_file = list(
         directory_dict.values()
         )
     if directory_dict:
