@@ -63,25 +63,70 @@ This project primarily targets overworld (`ymu/`) models and animations from FE9
 
 <details>
 <summary>Requirements & Tools</summary>
-    
+
 1. [Blender](https://www.blender.org/download/) 4.2+ (tested using v5.0.1)
 2. [Latest release of Tellius Forge](https://github.com/ltra043/tellius-forge/releases/latest). Source code also available in [plugin/](./plugin/tellius-forge.py) and [tools/](./tools/)
 3. [BrawlCrate](https://github.com/soopercool101/BrawlCrate)
 4. [Lumina](https://github.com/thane98/lumina) by thane98
-5. Additional utility scripts in [tools/](tools/). Necessary tools will be available as executables through [Releases](https://github.com/ltra043/tellius-forge/releases)
+5. Additional utility scripts in [tools/](tools/). Required tools are also available as Windows executables through [Releases](https://github.com/ltra043/tellius-forge/releases)
 6. Optional: [ImHex](https://imhex.werwolv.net/) or any hex editor
 
 </details>
 
 <details>
 <summary>Installing the Blender Plugin</summary>
-  
-1. Download the [latest release](https://github.com/ltra043/tellius-forge/releases/latest) of the blender addon `tellius-forge.py` and necessary tools `tellius-forge-toolkit.7z`.
-2. In Blender, go to **Edit > Preferences > Add-ons**.
-3. Click the dropdown arrow (**▼**) at the top-right and select **Install from Disk...**.
-4. Navigate to `tellius-forge.py` and select it to install.
-5. Search for "Fire Emblem" and check the box to enable.
-6. The plugin adds new options under **File > Import** and **File > Export**.
+
+#### For Windows Users (Simplest Method):  
+1. Download the [latest release](https://github.com/ltra043/tellius-forge/releases/latest) of the Blender add-on `tellius-forge.py`. 
+2. Download the necessary Windows executables `tellius-forge-toolkit.7z` and extract the contents.
+    1. **Important!** Keep all contents of tellius-forge-toolkit.7z in the directories as they were packaged.
+
+#### For Non-Windows Users (and Command-Line Users):  
+
+Download the Tools & Source Code
+1. Download the source code folders for the required tools: [ga_simple_edits](./tools/animation/ga_simple_edits) and [gs_texture_edits](.tools/body/gs_texture_edits).
+2. Ensure you have Python installed on your system.
+
+Install Dependencies
+<ol type="1">
+<li>Open your command-line terminal and navigate to the tool's directory: <code>cd /path/to/your/project</code></li>
+<li><strong>Recommended:</strong> Create and activate a virtual environment:
+    <details>
+    <summary>macOS / Linux</summary>
+    <ol type="i">
+    <li>Create: <code>python3 -m venv venv</code></li>
+    <li>Activate: <code>source venv/bin/activate</code></li>
+    </ol>
+    </details>
+    <details>
+    <summary>Windows CMD</summary>
+    <ol type="i">
+    <li>Create: <code>python -m venv venv</code></li>
+    <li>Activate: <code>venv\Scripts\activate.bat</code></li>
+    </ol>
+    </details>
+    <details>
+    <summary>Windows PowerShell</summary>
+    <ol type="i">
+    <li>Create: <code>python -m venv venv</code></li>
+    <li>Activate: <code>.\venv\Scripts\Activate.ps1</code></li>
+    </ol>
+    </details>
+</li>
+<li>Install required packages using:
+    <ol type="i">
+    <li><strong>macOS / Linux:</strong> <code>python3 -m pip install -r requirements.txt</code></li>
+    <li><strong>Windows:</strong> <code>python -m pip install -r requirements.txt</code></li>
+    </ol>
+</li>
+</ol>
+
+#### All Users Blender Add-on Installation
+1. In Blender, go to **Edit > Preferences > Add-ons**.
+2. Click the dropdown arrow (**▼**) at the top-right and select **Install from Disk...**.
+3. Navigate to `tellius-forge.py` and select it to install.
+4. Search for "Fire Emblem" and check the box to enable.
+5. The plugin adds new options under **File > Import** and **File > Export**.
 
 </details>
 
@@ -92,7 +137,7 @@ This project primarily targets overworld (`ymu/`) models and animations from FE9
 Tellius Forge  
 ├─ [docs/](docs/)      User guides  
 ├─ [research/](research/)  Reverse engineering notes  
-├─ [plugin/](plugin/)    Blender addon  
+├─ [plugin/](plugin/)    Blender add-on  
 ├─ [tools/](tools/)     Utility scripts  
 └─ [images/](images/)    Documentation images  
 
@@ -100,7 +145,7 @@ Tellius Forge
 
 ## Credits
     
-Asset analysis and the blender plugin are based on a [Noesis import plugin](https://github.com/Zheneq/Noesis-Plugins) created by [Zheneq](https://github.com/Zheneq). The source code was used and expanded with the original author's permission.
+Asset analysis and the Blender add-on are based on a [Noesis import plugin](https://github.com/Zheneq/Noesis-Plugins) created by [Zheneq](https://github.com/Zheneq). The source code was used and expanded with the original author's permission.
 
 Initial conversion of the Noesis plugin into a Blender plugin by [ATMachine](https://github.com/ATMachine1).
 
