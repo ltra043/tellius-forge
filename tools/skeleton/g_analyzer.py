@@ -16,8 +16,10 @@ BONE_STRIDE = 0xF4        # 244 bytes
 def ru4(data, offset):
     return struct.unpack('>I', data[offset:offset+4])[0]
 
+
 def ri4(data, offset):
     return struct.unpack('>i', data[offset:offset+4])[0]
+
 
 def rf4(data, offset):
     return struct.unpack('>f', data[offset:offset+4])[0]
@@ -28,23 +30,31 @@ def _mat3_identity():
             [0.0, 1.0, 0.0],
             [0.0, 0.0, 1.0]]
 
+
 def _mat3_mul(A, B):
-    return [[sum(A[r][k] * B[k][c] for k in range(3)) for c in range(3)] for r in range(3)]
+    return [[sum(A[r][k] * B[k][c] for k in range(3))
+             for c in range(3)]
+            for r in range(3)]
+
 
 def _rot_x(deg):
     a = math.radians(deg); c, s = math.cos(a), math.sin(a)
     return [[1, 0, 0], [0, c, -s], [0, s, c]]
 
+
 def _rot_y(deg):
     a = math.radians(deg); c, s = math.cos(a), math.sin(a)
     return [[c, 0, s], [0, 1, 0], [-s, 0, c]]
+
 
 def _rot_z(deg):
     a = math.radians(deg); c, s = math.cos(a), math.sin(a)
     return [[c, -s, 0], [s, c, 0], [0, 0, 1]]
 
+
 def _apply_rot(mat3, vec3):
     return tuple(sum(mat3[r][c] * vec3[c] for c in range(3)) for r in range(3))
+
 
 def _local_rotation(deg_xyz):
     return _mat3_mul(_rot_z(deg_xyz[2]),
@@ -127,7 +137,9 @@ def parse_skeleton(filepath):
         flags = b['bone_flags']
         par = b['parent_idx']
         deg = b['p100']
-        local_R = _local_rotation(deg) if any(abs(d) > 1e-6 for d in deg) else _mat3_identity()
+        local_R = _local_rotation(deg) if any(
+            abs(d) > 1e-6 for d in deg
+            ) else _mat3_identity()
 
         if par is None:
             true_world[idx] = b['p112']
@@ -183,8 +195,17 @@ def generate_report(filepath, bones, true_world, bone_count):
     lines.append('')
 
     # Table header
-    lines.append('| Bone ID | Name | Parent ID | Flags | World Position (X, Y, Z) | Transloc (X, Y, Z) | Transrot (X, Y, Z) |')
-    lines.append('|---------|------|-----------|-------|---------------------------|--------------------|--------------------|')
+    lines.append('| Bone ID '
+                 '| Name '
+                 '| Parent ID '
+                 '| Flags '
+                 '| World Position (X, Y, Z) '
+                 '| Transloc (X, Y, Z) '
+                 '| Transrot (X, Y, Z) '
+                 '|')
+    lines.append('|---------|------|-----------|-------'
+                 '|---------------------------|--------------------'
+                 '|--------------------|')
 
     for b in bones:
         idx = b['index']
@@ -198,13 +219,22 @@ def generate_report(filepath, bones, true_world, bone_count):
         safe_name = name.replace('|', '→')
 
         bone_id_str = f"{idx} (0x{idx:X})"
-        parent_str = f"{parent_idx} (0x{parent_idx:X})" if parent_idx is not None else "None"
+        parent_str = "None"
+        if parent_idx is not None:
+            parent_str = f"{parent_idx} (0x{parent_idx:X})"
 
         wp_str = f"({wp[0]:.6f}, {wp[1]:.6f}, {wp[2]:.6f})"
         tl_str = f"({tl[0]:.6f}, {tl[1]:.6f}, {tl[2]:.6f})"
         tr_str = f"({tr[0]:.6f}, {tr[1]:.6f}, {tr[2]:.6f})"
 
-        lines.append(f"| {bone_id_str} | `{safe_name}` | {parent_str} | 0x{flags:04X} | {wp_str} | {tl_str} | {tr_str} |")
+        lines.append(f"| {bone_id_str} "
+                     f"| `{safe_name}` "
+                     f"| {parent_str} "
+                     f"| 0x{flags:04X} "
+                     f"| {wp_str} "
+                     f"| {tl_str} "
+                     f"| {tr_str} "
+                     f"|")
 
     return '\n'.join(lines), report_name
 
@@ -212,7 +242,8 @@ def generate_report(filepath, bones, true_world, bone_count):
 def show_help():
     print("Usage: python g-analyzer.py <skeleton_file.g>")
     print()
-    print("Reads a .g skeleton file from FE9/FE10 and generates a markdown report.")
+    print("Reads a .g skeleton file from FE9/FE10 and "
+          "generates a markdown report.")
     print()
 
 
@@ -221,7 +252,7 @@ def main():
         print("You must provide a .g skeleton file as an argument.")
         print("Use -h or --help for usage instructions.\n")
         return
-    
+
     args = sys.argv[1:]
     if args[0] in ("-h", "--help"):
         show_help()
@@ -230,7 +261,8 @@ def main():
     filepath = sys.argv[1]
 
     if not filepath.lower().endswith('.g'):
-        print("Input file must be a skeleton file from FE9 or FE10 (.g extension type)")
+        print("Input file must be a skeleton file from "
+              "FE9 or FE10 (.g extension type)")
         try:
             input("Press Enter to exit...")
         except (EOFError, KeyboardInterrupt):
@@ -247,7 +279,11 @@ def main():
 
     print(f"Parsing: {filepath}")
     bones, true_world, bone_count = parse_skeleton(filepath)
-    report, report_name = generate_report(filepath, bones, true_world, bone_count)
+    report, report_name = generate_report(filepath,
+                                          bones,
+                                          true_world,
+                                          bone_count
+                                          )
 
     output_path = os.path.join(os.path.dirname(filepath), f"{report_name}.md")
     with open(output_path, 'w', encoding='utf-8') as f:

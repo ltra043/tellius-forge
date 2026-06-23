@@ -3,10 +3,12 @@ import json
 import sys
 import os
 
+
 def make_color(r, g, b, a=0xB3):
     return (a << 24) | (b << 16) | (g << 8) | r
 
-# ---- Color List ---- 
+
+# ---- Color List ----
 # Major sections - pure greys (R=G=B)
 grey_light = make_color(156, 156, 156)  # 0xB39C9C9C
 grey_dark = make_color(83, 83, 83)      # 0xB3535353
@@ -25,27 +27,27 @@ pink = make_color(255, 82, 201)         # pink
 
 # ---- Assign Colors ----
 # Major sections - pure greys (R=G=B)
-C_HEADER   = grey_dark
-C_BONETBL  = grey_light
-C_CHANNEL  = grey_dark
-C_FCURVE   = grey_light
-C_FOOTER1  = grey_light
-# C_HEADER   = make_color(78, 78, 78)      # 0xB34E4E4E
-# C_BONETBL  = make_color(156, 156, 156)   # 0xB39C9C9C
-# C_CHANNEL  = make_color(83, 83, 83)      # 0xB3535353
-# C_FCURVE   = make_color(170, 170, 170)   # 0xB3AAAAAA
-# C_FOOTER1  = make_color(152, 152, 152)   # 0xB3989898
+C_HEADER = grey_dark
+C_BONETBL = grey_light
+C_CHANNEL = grey_dark
+C_FCURVE = grey_light
+C_FOOTER1 = grey_light
+# C_HEADER = make_color(78, 78, 78)      # 0xB34E4E4E
+# C_BONETBL = make_color(156, 156, 156)   # 0xB39C9C9C
+# C_CHANNEL = make_color(83, 83, 83)      # 0xB3535353
+# C_FCURVE = make_color(170, 170, 170)   # 0xB3AAAAAA
+# C_FOOTER1 = make_color(152, 152, 152)   # 0xB3989898
 
 # Detail sub-bookmark colors (shared FE9/FE10)
-C_HDR_PTR   = yellow
-C_GAME_ID   = pink
-C_START_FR  = green
-C_END_FR    = red
-C_BONE_CNT  = blue_light
-C_BTBL_PTR  = blue
-C_CHNL_PTR  = orange
+C_HDR_PTR = yellow
+C_GAME_ID = pink
+C_START_FR = green
+C_END_FR = red
+C_BONE_CNT = blue_light
+C_BTBL_PTR = blue
+C_CHNL_PTR = orange
 C_FCURVE_PTR = purple
-C_FTR_PTR1  = blue
+C_FTR_PTR1 = blue
 
 # FE9 Footer Data 1 rainbow (7-color)
 FD1_RAINBOW = [red, orange, yellow, green, blue, purple, pink]
@@ -56,9 +58,9 @@ C_FD2_SECTION = grey_light
 C_PADDING_FE10 = grey_dark
 
 # FE10 Footer Pointer colors
-C_FTR_ID_1  = red
+C_FTR_ID_1 = red
 C_FTR_PTR_1 = orange
-C_FTR_ID_2  = blue_light
+C_FTR_ID_2 = blue_light
 C_FTR_PTR_2 = purple
 C_FTR_PTR_3 = pink
 
@@ -66,16 +68,17 @@ C_FTR_PTR_3 = pink
 FD1_FE10_CYCLE = [yellow, pink, red, orange]
 
 # FE10 FD1 non-entry colors (exact from reference)
-C_FD1_FE10_ENTRIES   = red
-C_FD1_FE10_INDEXES   = orange
+C_FD1_FE10_ENTRIES = red
+C_FD1_FE10_INDEXES = orange
 
 # FE10 FD2 4-colour entry cycle (medium blue, purple, green, light blue)
-# Entries start from cycle[2]; write-up cycles [green, light blue, medium blue, purple]
+# Entries start from cycle[2];
+# write-up cycles [green, light blue, medium blue, purple]
 FD2_FE10_CYCLE = [green, blue_light, blue, purple]
 
 # FE10 FD2 non-entry colors (exact from reference)
-C_FD2_FE10_ENTRIES   = green
-C_FD2_FE10_INDEXES   = blue_light
+C_FD2_FE10_ENTRIES = green
+C_FD2_FE10_INDEXES = blue_light
 
 
 def read_u32be(data, offset):
@@ -87,6 +90,8 @@ def read_u16be(data, offset):
 
 
 _id = 0
+
+
 def next_id():
     global _id
     _id += 1
@@ -126,7 +131,8 @@ def parse_fd1_entries(data, fd1_start, fd1_size, filesize, bookmarks, is_fe10):
     else:
         cycle = FD1_RAINBOW
         n_cycle = len(cycle)
-        # FE9: #Entries = cycle[0], StartIndexes = cycle[1], entries start from cycle[2]
+        # FE9: #Entries = cycle[0], StartIndexes = cycle[1]
+        # entries start from cycle[2]
         col_entries = cycle[0]
         col_indexes = cycle[1]
         entry_cycle_start = 2
@@ -149,7 +155,8 @@ def parse_fd1_entries(data, fd1_start, fd1_size, filesize, bookmarks, is_fe10):
             indices.append(f"0x{idx:02x}")
 
         bookmarks.append(bm(
-            f"FD1: Entry Start Indexes [{fmt_range(idx_list_off, idx_list_size)}]",
+            f"FD1: Entry Start Indexes "
+            f"[{fmt_range(idx_list_off, idx_list_size)}]",
             idx_list_off, idx_list_size,
             col_indexes,
             "Entries start at:\n" + ", ".join(indices)
@@ -203,7 +210,8 @@ def parse_fd2_entries(data, fd2_start, fd2_size, filesize, bookmarks):
             indices.append(f"0x{idx:02x}")
 
         bookmarks.append(bm(
-            f"FD2: Entry Start Indexes [{fmt_range(idx_list_off, idx_list_size)}]",
+            f"FD2: Entry Start Indexes "
+            f"[{fmt_range(idx_list_off, idx_list_size)}]",
             idx_list_off, idx_list_size,
             C_FD2_FE10_INDEXES,
             "Entries start at:\n" + ", ".join(indices)
@@ -218,7 +226,7 @@ def parse_fd2_entries(data, fd2_start, fd2_size, filesize, bookmarks):
                 break
 
             # FD2 entry structure:
-            # [num_frames(2)] [bone_id(2)] [frame(2) visible(2)]*N + padding to 4
+            # [num_frames(2)] [bone_id(2)] [frame(2) visible(2)]*N + pad to 4
             num_frames = read_u16be(data, entry_off)
             bone_id = read_u16be(data, entry_off + 2)
             entry_data_size = 4 + num_frames * 4
@@ -234,8 +242,10 @@ def parse_fd2_entries(data, fd2_start, fd2_size, filesize, bookmarks):
             for k in range(num_frames):
                 frm = read_u16be(data, entry_off + 4 + k * 4)
                 vis = read_u16be(data, entry_off + 6 + k * 4)
-                comment_lines.append(f"\n[+0x{4 + k*4:02X}] | frame{k} = 0x{frm:x}")
-                comment_lines.append(f"[+0x{6 + k*4:02X}] | scale{k} = 0x{vis:x}")
+                comment_lines.append(f"\n[+0x{4 + k*4:02X}] | "
+                                     f"frame{k} = 0x{frm:x}")
+                comment_lines.append(f"[+0x{6 + k*4:02X}] | "
+                                     f"scale{k} = 0x{vis:x}")
 
             bookmarks.append(bm(
                 f"FD2: Entry {i + 1} [{fmt_range(entry_off, padded)}]",
@@ -273,7 +283,12 @@ def handle_fe9_footer(data, filesize, hdr_ptr, bookmarks):
             fd1_start, fd1_size, C_FOOTER1,
             f"Effect and Timing Data.\nTotal 0x{fd1_size:X} bytes"
         ))
-        parse_fd1_entries(data, fd1_start, fd1_size, filesize, bookmarks, is_fe10=False)
+        parse_fd1_entries(data,
+                          fd1_start,
+                          fd1_size,
+                          filesize,
+                          bookmarks,
+                          is_fe10=False)
 
 
 def handle_fe10_footer(data, filesize, hdr_ptr, bookmarks):
@@ -324,7 +339,12 @@ def handle_fe10_footer(data, filesize, hdr_ptr, bookmarks):
             ))
 
             if is_fd1:
-                parse_fd1_entries(data, fd_start, fd_size, filesize, bookmarks, is_fe10=True)
+                parse_fd1_entries(data,
+                                  fd_start,
+                                  fd_size,
+                                  filesize,
+                                  bookmarks,
+                                  is_fe10=True)
             else:
                 parse_fd2_entries(data, fd_start, fd_size, filesize, bookmarks)
 
@@ -349,7 +369,12 @@ def handle_fe10_footer(data, filesize, hdr_ptr, bookmarks):
                 fd1_start, fd1_size, C_FD1_SECTION,
                 f"Effect and Timing Data.\nTotal 0x{fd1_size:X} bytes"
             ))
-            parse_fd1_entries(data, fd1_start, fd1_size, filesize, bookmarks, is_fe10=True)
+            parse_fd1_entries(data,
+                              fd1_start,
+                              fd1_size,
+                              filesize,
+                              bookmarks,
+                              is_fe10=True)
 
         # FD2
         fd2_start = ftr_ptr_2
@@ -359,7 +384,8 @@ def handle_fe10_footer(data, filesize, hdr_ptr, bookmarks):
             bookmarks.append(bm(
                 f"Footer Data 2 (FD2) [{fmt_range(fd2_start, fd2_size)}]",
                 fd2_start, fd2_size, C_FD2_SECTION,
-                f"Hides bones for part/all of animation.\nTotal 0x{fd2_size:X} bytes"
+                f"Hides bones for part/all of animation.\n"
+                f"Total 0x{fd2_size:X} bytes"
             ))
             parse_fd2_entries(data, fd2_start, fd2_size, filesize, bookmarks)
 
@@ -410,7 +436,8 @@ def handle_fe10_footer(data, filesize, hdr_ptr, bookmarks):
         bookmarks.append(bm(
             f"ftr_ptr_3 [{fmt_range(hdr_ptr + 8, 4)}]",
             hdr_ptr + 8, 4, C_FTR_PTR_3,
-            "Last 4 bytes of file IF first 4 bytes (header pointer) is nonzero.\n\n"
+            "Last 4 bytes of file "
+            "IF first 4 bytes (header pointer) is nonzero.\n\n"
             "If ftr_ptr_3 is nonzero, it points to ftr_ID_1 and\n"
             "both Footer Data 1 and 2 are present in the file.\n\n"
             "If ftr_ptr_3 is zero, there is only one Footer Data # section."
@@ -424,13 +451,13 @@ def process_ga(filepath, out_path):
     filesize = len(data)
 
     # ---- Parse header (big endian) ----
-    hdr_ptr     = read_u32be(data, 0x00)
+    hdr_ptr = read_u32be(data, 0x00)
     start_frame = read_u32be(data, 0x14)
-    end_frame   = read_u32be(data, 0x18)
-    bone_count  = read_u32be(data, 0x1C)
-    bone_tbl    = read_u32be(data, 0x20)
-    chnl_ptr    = read_u32be(data, 0x24)
-    fcurve_ptr   = read_u32be(data, 0x2C)
+    end_frame = read_u32be(data, 0x18)
+    bone_count = read_u32be(data, 0x1C)
+    bone_tbl = read_u32be(data, 0x20)
+    chnl_ptr = read_u32be(data, 0x24)
+    fcurve_ptr = read_u32be(data, 0x2C)
 
     game_flag = data[0x08]
     is_fe10 = (game_flag == 1)
@@ -438,12 +465,12 @@ def process_ga(filepath, out_path):
     bookmarks = []
 
     # ---- Header ----
-    bookmarks.append(bm(f"File Info [0x00 - 0x2F]", 0x00, 0x30,
+    bookmarks.append(bm("File Info [0x00 - 0x2F]", 0x00, 0x30,
                         C_HEADER, "Header section"))
 
     hdr_comment = "Pointer to footer pointer(s) (0 = no footer)"
     if is_fe10:
-        hdr_comment += "\n\nIn FE10 animations, points to 0x0c bytes before EOF"
+        hdr_comment += "\n\nIn FE10, points to 0x0c bytes before EOF"
     bookmarks.append(bm(f"hdr_ptr [{fmt_range(0x00, 4)}]", 0x00, 4,
                         C_HDR_PTR, hdr_comment))
     bookmarks.append(bm(f"Game ID [{fmt_range(0x08, 1)}]", 0x08, 1,
@@ -478,8 +505,10 @@ def process_ga(filepath, out_path):
             bt_row, 4, blue_light,
             "Column 1, Row 2 (Count starts at 1)\n"
             "- Identifies a bone from the associated skeleton to transform\n"
-            "- Bone ID matches the index of the bone record data (starts at 0)\n"
-            "- Bone ID matches index of bone name in string pool (ignoring the first \"[unknown]\")"
+            "- Bone ID matches the index of the bone record data "
+            "(starts at 0)\n"
+            "- Bone ID matches index of bone name in string pool "
+            "(ignoring the first \"[unknown]\")"
         ))
         bookmarks.append(bm(
             f"Bone Table: Transform Type [{fmt_range(bt_row + 4, 4)}]",
@@ -494,7 +523,8 @@ def process_ga(filepath, out_path):
             bt_row + 8, 4, blue_light,
             "Column 3, Row 2 (Count starts at 1)\n"
             "- Start entry index of associated data in Channel Data.\n"
-            "- If value = 0x06, the associated channel data starts at entry 0x6. \n"
+            "- If value = 0x06, "
+            "the associated channel data starts at entry 0x6. \n"
             "- Each channel entry is 0x0c bytes long."
         ))
         bookmarks.append(bm(
@@ -502,7 +532,8 @@ def process_ga(filepath, out_path):
             bt_row + 0x0C, 4, blue,
             "Column 4, Row 2 (Count starts at 1)\n"
             "- # Channel entries in Channel Data.\n"
-            "- If value = 0x03, the associated channel data has 0x03 entries. \n"
+            "- If value = 0x03, "
+            "the associated channel data has 0x03 entries.\n"
             "- Each channel entry is 0x0c bytes long."
         ))
 
@@ -525,7 +556,8 @@ def process_ga(filepath, out_path):
             "Indexes start at value = 0x00\n"
             "This is entry 0x01, or the second entry.\n"
             "Each Channel Data entry is 0x0c bytes long.\n"
-            "See bookmarks for next entry (Entry 0x02) for more detailed breakdown"
+            "See bookmarks for next entry (Entry 0x02) "
+            "for more detailed breakdown"
         ))
     if chnl_count > 2:
         chnl_e2 = chnl_ptr + 0x18
@@ -536,13 +568,16 @@ def process_ga(filepath, out_path):
             "0x0: Scale X\n0x1: Scale Y\n0x2: Scale Z\n"
             "0x3: Rotation X\n0x4: Rotation Y\n0x5: Rotation Z\n"
             "0x6: Location X\n0x7: Location Y\n0x8: Location Z\n\n"
-            "Channel entries for the same bone are organized by ascending Channel Type"
+            "Channel entries for the same bone are organized "
+            "by ascending Channel Type"
         ))
         bookmarks.append(bm(
             f"Chnl Data: Conversion Factor [{fmt_range(chnl_e2 + 2, 1)}]",
             chnl_e2 + 2, 1, pink,
-            "Used to convert f-curve y-values to meaningful game units (like degrees for rotation)\n"
-            "Unknown how to determine what value should be used. Preserve from existing animations when editing."
+            "Used to convert f-curve y-values to meaningful game units "
+            "(like degrees for rotation)\n"
+            "Unknown how to determine what value should be used. "
+            "Preserve from existing animations when editing."
         ))
         bookmarks.append(bm(
             f"Chnl Data: End Frame [{fmt_range(chnl_e2 + 5, 1)}]",
@@ -558,7 +593,8 @@ def process_ga(filepath, out_path):
         bookmarks.append(bm(
             f"Chnl Data: F-Curve Start Index [{fmt_range(chnl_e2 + 8, 4)}]",
             chnl_e2 + 8, 4, yellow,
-            "Tells what entry index in F-Curve Data this channel's f-curve starts at.\n"
+            "Tells what entry index in F-Curve Data "
+            "this channel's f-curve starts at.\n"
             "Each keyframe in F-Curve Data has a 4-byte entry."
         ))
 
@@ -571,9 +607,11 @@ def process_ga(filepath, out_path):
     bookmarks.append(bm(
         f"F-Curve Data [{fmt_range(fcurve_ptr, fd_size)}]",
         fcurve_ptr, fd_size, C_FCURVE,
-        f"0x{total_kf:X} entries (keyframes), 0x{chnl_count:X} F-curves, 0x{fd_size:X} bytes\n"
+        f"0x{total_kf:X} entries (keyframes), 0x{chnl_count:X} F-curves, "
+        f"0x{fd_size:X} bytes\n"
         "Each entry is 4 bytes. 2 byte keyframe, 2 byte transform value.\n"
-        "An F-curve grouping is made of variable # of entries, according to Channel Data."
+        "An F-curve dataset is made of variable # of entries, "
+        "as recorded in its associated Channel Data."
     ))
 
     # ---- F-Curve Data detail bookmark (F-Curve 0x01 = second F-Curve) ----
@@ -585,9 +623,12 @@ def process_ga(filepath, out_path):
         fc_entry_size = fc_kf_count * 4
         if fc_entry_start + fc_entry_size <= filesize and fc_entry_size > 0:
             first_kf_val = read_u16be(data, fc_entry_start)
-            last_kf_val = read_u16be(data, fc_entry_start + (fc_kf_count - 1) * 4)
+            last_kf_val = read_u16be(data,
+                                     fc_entry_start + (fc_kf_count - 1) * 4
+                                     )
             bookmarks.append(bm(
-                f"FC Data: F-Curve 0x01 [{fmt_range(fc_entry_start, fc_entry_size)}]",
+                f"FC Data: F-Curve 0x01 "
+                f"[{fmt_range(fc_entry_start, fc_entry_size)}]",
                 fc_entry_start, fc_entry_size, purple,
                 f"This is the set of (frame, value) pairings for the f-curve "
                 f"associated with Channel Entry 0x01\n"
@@ -610,10 +651,13 @@ def process_ga(filepath, out_path):
         json.dump(output, f, indent=4)
 
     print(f"Wrote {len(bookmarks)} bookmarks to {out_path}")
-    print(f"  Header:     0x00 - 0x2F")
-    print(f"  Bone Table: {fmt_range(bone_tbl, bt_size)}  ({bone_count} entries)")
-    print(f"  Channel:    {fmt_range(chnl_ptr, chnl_size)}  ({chnl_count} entries)")
-    print(f"  F-Curve:    {fmt_range(fcurve_ptr, fd_size)}  ({total_kf} keyframes)")
+    print("  Header:     0x00 - 0x2F")
+    print(f"  Bone Table: {fmt_range(bone_tbl, bt_size)}  "
+          "({bone_count} entries)")
+    print(f"  Channel:    {fmt_range(chnl_ptr, chnl_size)}  "
+          f"({chnl_count} entries)")
+    print(f"  F-Curve:    {fmt_range(fcurve_ptr, fd_size)}  "
+          f"({total_kf} keyframes)")
     if hdr_ptr != 0:
         print(f"  Game:       {'FE10' if is_fe10 else 'FE9'}")
 
@@ -622,21 +666,25 @@ def main():
     args = []
     args = sys.argv[1:]
     if len(args) == 0 or args[0] == "-o":
-        print("Usage: py ga_bookmark.py <animation.ga|folder> [-o output.hexbm|output_folder]")
+        print("Usage: py ga_bookmark.py <animation.ga|folder> "
+              "[-o output.hexbm|output_folder]")
         print("Use -h or --help for more details.")
         sys.exit(1)
-    
+
     if args[0] in ("-h", "--help"):
-        print("Usage: py ga_bookmark.py <animation.ga|folder> [-o output.hexbm|output_folder]")
+        print("Usage: py ga_bookmark.py <animation.ga|folder> "
+              "[-o output.hexbm|output_folder]")
 
         print("About Input Arguments:")
-        print("\tIf a .ga file is provided, outputs a .hexbm bookmark file for that animation.")
+        print("\tIf a .ga file is provided, "
+              "outputs a .hexbm bookmark file for that animation.")
         print("\tIf a folder is provided, outputs a folder containing "
-        ".hexbm bookmark files for each .ga in the input folder.")
+              ".hexbm bookmark files for each .ga in the input folder.")
 
         print("About Output Location:")
-        print("\tBy default, output is created in the parent directory of the input.")
-        print("\tUse the -o option to specify a different output file or folder.")
+        print("\tBy default, "
+              "output is created in the parent directory of the input.")
+        print("\tUse the -o option to specify a different output path.")
         print()
         sys.exit(1)
 
