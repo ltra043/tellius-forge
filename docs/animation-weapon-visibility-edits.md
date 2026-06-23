@@ -7,8 +7,8 @@ Basic animation (in)visibility editing using hex editing, Blender, or Tellius Fo
 
 <p>
 <b>Author:</b> Jade (ltra043)<br>
-<b>Date:</b> 2026-06-05<br>
-<b>Version:</b> <code>Tellius Forge v0.1.0</code><br>
+<b>Date:</b> 2026-06-12<br>
+<b>Version:</b> <code>Tellius Forge v0.2.0</code><br>
 </p>
 
 
@@ -29,7 +29,7 @@ Basic animation (in)visibility editing using hex editing, Blender, or Tellius Fo
 <summary>Resources & Requirements</summary>
 
 1. [Tellius Forge](https://github.com/ltra043/tellius-forge/releases/latest) (Blender Addon & Toolkit)
-   - Non-Windows users may need to download and use the source code and assets at [ga-simple-edits/](../tools/animation/ga-simple-edits/)
+   - Non-Windows users may need to download and use the source code and assets at [ga_simple_edits/](../tools/animation/ga_simple_edits/)
 2. [Lumina](https://github.com/thane98/lumina) by thane98
 3. [ImHex](https://imhex.werwolv.net/) or any hex editor
    - Only needed if you choose to hex edit animations
@@ -38,7 +38,7 @@ Basic animation (in)visibility editing using hex editing, Blender, or Tellius Fo
 
 Optional / Recommended:
 1. Programmer Calculator or any hex calculator
-2. [Skeleton Analyzer](../tools/skeleton/g-skeleton-analyzer/g-skeleton-analyzer.py): Summarizes skeleton data, including provision of a table of bone IDs and bone names.
+2. [Skeleton Analyzer](../tools/skeleton/g-skeleton-analyzer/g_skeleton_analyzer.py): Summarizes skeleton data, including provision of a table of bone IDs and bone names.
 3. [Body & Skeleton Workflow](./body-skeleton-workflow.md)
 3. [Youtube Tutorial Playlist](https://youtube.com/playlist?list=PL650N9tNdfYazuxS5b63BzaUKxZLErT0e)
 4. [Tellius Animation File Format](../research/animation/tellius-animation-file-format.md)
@@ -67,7 +67,7 @@ This includes:
 
 ### About Scale Transforms
 
-Tellius animations do not contain a dedicated visibility track. Weapon visibility is controlled by bone scale. Setting a weapon bone's scale to 0 makes the associated mesh invisible; setting scale back to 1 restores normal visibility (and size).
+Tellius animations do not always contain a dedicated visibility track. Instead, visibility is often controlled by bone scale. Setting a bone's scale to 0 makes the associated mesh invisible; setting scale back to 1 restores normal visibility (and size).
 
 Although this guide focuses on weapon visibility, the same techniques can be used to add or modify scale animation data for any bone.
 
@@ -144,8 +144,8 @@ All mentioned downloads and reference materials are linked in [Resources & Requi
 ### 2.1 Download & Install
 
 1. Download the *latest release of Tellius Forge*.
-   - Non-Windows users may need to download the source code and assets at `tools/animation/ga-simple-edits/`
-   - `ga-simple-edits.exe` and `ga-simple-edits.py` are considered equivalent programs. Swap out mention of the `.exe` for `.py` in instructions if using the script. 
+   - Non-Windows users may need to download the source code and assets at `tools/animation/ga_simple_edits/`
+   - `ga-simple-edits.exe` and `ga_simple_edits.py` are considered equivalent programs. Swap out mention of the `.exe` for `.py` in instructions if using the script. 
 2. Extract all from `tellius-forge-toolkit.7z`
 3. **IMPORTANT!** The app `ga-simple-edits.exe` and the folder `assets/` must be kept in the same directory. Do not rename `assets/` or any files inside. 
 4. Install the Blender Addon `tellius-forge.py`. See the *Getting Started* guide for detailed installation instructions.
@@ -167,24 +167,27 @@ All mentioned downloads and reference materials are linked in [Resources & Requi
 </p>
 
 1. Run `ga-simple-edits.exe`.
-2. Input the path to the folder holding animations you want to modify. The app will edit all animations nested within this folder.
+2. **Select from the Edit Options.** To make a bone invisible, choose **option 1**.
+3. **Provide an input folder path.** Input the path to the folder holding animations you want to modify. The app will edit all animations nested within this folder.
    - Remember that for skeletons modified with "Blender Hierarchy" bone order, you should have already modified animations to account for shifted bone IDs. These **updated animations should be your input** for this edit.
-3. Select an output folder path. 
+4. **Provide an output folder path.** 
    - I recommend **choosing a separate output folder**, unique from the input folder. This leaves your original animations intact in case anything goes wrong.
    - Choosing the same input and output path will overwrite files (if standard animation names are used).
-4. Press **Next**.
+5. Press **Next**.
 
 ### 2.3 Provide Invisibility Edit Info
 
 <p align="center" style="font-size: 14px;">
   <img src="../images/animation/ga-simple-edit-page-1-invis.png" alt="Image 2: Page 1 ('Invis') of ga-simple-edits UI. 
-  Red (top): Bone IDs Textbox. 
+  Green (top): Important note about next steps (sorting data).
+  Red: Bone IDs Textbox. 
   Blue (center): Confirm button. 
   Yellow (bottom): Status Text. " width=400 style="border: 2px solid white;">
   <br>
   <em><b>
   Image 2: Page 1 ("Invis") of ga-simple-edits UI</b><br>
-  Red (top): Bone IDs Textbox<br>
+  Green (top): Important note about next steps (sorting data)<br>
+  Red: Bone IDs Textbox<br>
   Blue (center): Confirm button<br>
   Yellow (bottom): Status Text 
   </em>
@@ -237,8 +240,8 @@ Image 3: Animation Workspace</b><br>
 </em>
 </p>
 
-1. The top horizontal bar should list available workspaces such as `Layout`, `Shading`, and `Animations`. 
-2. Click on `Animations` to switch to that workspace. By default, you should have 5 areas open. 
+1. The top horizontal bar should list available workspaces such as `Layout`, `Shading`, and `Animation`. 
+2. Click on `Animation` to switch to that workspace. By default, you should have 5 areas open. 
 3. Open the editors listed in the **Image 3** caption and adjust the area sizes to your liking.
   
 ### 3.3 Setup Playback Controls
@@ -302,7 +305,7 @@ Yellow Arrow (bottom): Toggle Playback Controls
    1. Deleting existing scale channels prevents original animation data from overriding the visibility state you are trying to establish.
    2. If you are NOT making the bone invisible, do not delete these channels. Use your judgement on which keyframes you want to keep.
 5. Hover your mouse in the **3D Viewport**.
-6. Press **S** and **0** to **set Scale X, Y, and Z to 0**.
+6. Press **S**, **0**, and **Enter** to **set Scale X, Y, and Z to 0**.
    1. You can also change scale in **Bone Properties** in the **Transform** panel.
    2. To change a bone from invisible (scale=0) to **standard visible**, set the **Scale XYZ = 1** using the **Transform** panel. 
 7. Still hovering in the 3D Viewport, press **I** to insert a keyframe at the current frame (0) for Scale XYZ channels.
@@ -381,52 +384,85 @@ This guide does not cover the hex data format in depth. See *Tellius Animation F
 
 
 ### 4.2 Channel Data Edits
-1. Find the pointer at address `0x2C`. Add `0x10 * num_added_bones` to this value This should take you to the **start of F-Curve Data**.
-2. For every additional bone you want to make invisible, **insert `0x24` bytes** before the start of F-Curve Data (i.e., at the end of Channel Data).
-3. Bookmark or note the new start of **F-Curve Data**.
-4. Update the pointer at `0x2C` to the new start address of **F-Curve Data**.
+1. Find the pointer at address `0x2C`. Add `0x10 * num_added_bones` to this value.
+2. Follow the updated pointer. It should take you to the **start of F-Curve Data**.
+3. For every additional bone you want to make invisible, **insert `0x24` bytes** before the start of F-Curve Data (i.e., at the end of Channel Data).
+4. Bookmark or note the new start of **F-Curve Data**.
+5. Update the pointer at `0x2C` to the new start address of **F-Curve Data**.
 
 **Update New Channel Data Entries**
 1. Copy and paste the following data over every inserted 0x24 bytes.
 ```
-00 00 0F 00 / 00 00 00 01 / EE EE EE E0
-00 01 0F 00 / 00 00 00 01 / EE EE EE E1
-00 02 0F 00 / 00 00 00 01 / EE EE EE E2
+00 00 0F 00  00 00 00 01  00 00 EE E0
+00 01 0F 00  00 00 00 01  00 00 EE E1
+00 02 0F 00  00 00 00 01  00 00 EE E2
 ```
 2. Find last entry's frame-related data.
    1. Find the last 4 bytes before the added data. This is the `last_frame_index`.
    2. Find the 2 bytes before `last_frame_index`. These 2 bytes are `last_frame_count`.
    3. Add together `last_frame_index` and `last_frame_count` to get the `next_frame_index`.
 3. Update the last 4 bytes of each added `0x0C` byte entry.
-   1. Replace `EE EE EE E0` with `next_frame_index`.
-   2. Replace `EE EE EE E1` with `next_frame_index + 0x01`
-   3. Replace `EE EE EE E2` with `next_frame_index + 0x02`
+   1. Replace `00 00 EE E0` with `next_frame_index`.
+   2. Replace `00 00 EE E1` with `next_frame_index + 0x01`
+   3. Replace `00 00 EE E2` with `next_frame_index + 0x02`
 
 ### 4.3 F-Curve Data Edits
 1. Find the end of F-Curve Data.
-   1. Check the first 4 bytes of the file. This is the **header pointer**. If 0, F-Curve Data is the last section of the file.  
+   1. Check the first 4 bytes of the file. This is the **header pointer**. 
+   2. If the **header pointer** value is 0, F-Curve Data is the last section of the file. Go to the end of F-Curve Data at the end of the file.
+   3. If **header pointer** is non-zero, the value is a big-endian pointer.
+   4. To update the pointer value,  add `(0x10 + 0x24) * num_added_bones` to this value. 
 
    *For FE9 Files:*
-   1. If **header pointer** is non-zero, the value is a big-endian pointer. 
-   2. To update the pointer value,  add `(0x10 + 0x24) * num_added_bones` to this value. 
-   3. This pointer should now take you to 1 byte after the end of F-Curve Data.  
+   1. Follow the pointer. It should now take you to 1 byte after the end of F-Curve Data.  
    
    *For FE10 Files:*
-   1. If **header pointer** is non-zero, it is a big-endian pointer.
-   2. To update the pointer value,  add `(0x10 + 0x24) * num_added_bones` to this value.
-   3. Follow the updated pointer.
-   4. If the 4-byte **header pointer target** value is 0x00, the **next 4 bytes** is a pointer called **footer pointer 1**.
-   5. If the 4-byte **header pointer target** value is 0x05, the **last 4 bytes** is a pointer called **footer pointer 1**.
+   1. Follow the updated pointer. This takes you to the **header pointer target**.
+   2. If the 4-byte **header pointer target** value is 0x00, the **next 4 bytes** is a pointer called **footer pointer 1**.
+   3. If the 4-byte **header pointer target** value is 0x05, the **last 4 bytes** is a pointer called **footer pointer 1**.
    4. Follow **footer pointer 1** as a big-endian pointer. This takes you to 1 byte after the end of F-Curve Data. 
-3. For every new invisible bone, insert `0x0C` bytes after the last byte of F-Curve Data.
-4. Leave all added bytes as `0x00`.
+2. For every new invisible bone, insert `0x0C` bytes after the last byte of F-Curve Data.
+3. Leave all added bytes as `0x00`.
 
-*Update Footer Pointers*
+### 4.4 Update Header and Footer Pointers
 1. Add `(0x10 + 0x24 + 0x0C) * num_added_bones` to all footer pointer values.
-2. If you need help identifying all footer pointers, read about the complex footer data structure in the *Skeleton Format Analysis* research document, available in [Resources & Requirements](#reader-information).
+   1. If you need help identifying all footer pointers, read about the complex footer data structure in the *Skeleton Format Analysis* research document, available in [Resources & Requirements](#reader-information).
+2. Add `0x0C * num_added_bones` to the header pointer.
 
 ---
-## 5. Testing Modified Animations
+
+## 5. Sort Animation Data
+
+### 5-1. Normal Sorting Patterns
+If you used the Tellius Forge Toolkit or Hex Edit options to make bone(s) invisible, your added data is likely out-of-order. 
+
+Animation data is typically sorted by:
+| Data Type | Sorted by (ascending) |
+|--------------|----------------------|
+| Bone Table rows | Bone ID |
+|Channel Data entries | Bone ID, Channel Type |
+| F-Curve Data keyframes | Bone ID, Channel Type, Frame |
+
+*When multiple sorted options are listed, they are listed in order. Data is sorted into large groupings and sorted by the next filter within those groupings* 
+
+### 5-2. Sorting Modified Animation Data
+While animations *might* function when out-of-order, they are more likely to display correctly when sorted. It is **best practice to sort animation data** before using it in-game, to reduce instability.
+
+Additionally, if you tried to make a bone invisible which is already transformed in the transform data, **you MUST sort data to remove any clashing transform instructions**.
+
+#### Sort Using Tellius Forge Toolkit
+Use the `ga-simple-animation-edits.exe` or `ga_simple_edits.py` to sort animation data quickly. 
+
+I do not recommend hex editing to sort the data, as it is easy to introduce errors.
+
+1. Run `ga-simple-edits.exe`.
+2. **Select from the Edit Options.** To sort animation data, choose **option 4**.
+3. **Provide an input folder path.** Input the path to the animation or folder holding animations you want to sort. The app will edit all animations nested within a folder.
+   - You do not need to provide an output path. This edit option overwrites files in place.
+4. Press the "Run Sorting Edit" button.
+
+---
+## 6. Testing Modified Animations
 
 1. Import animations onto your *animation-prepared model* in Blender to test they function as expected.
    1. *Animation-prepared* refers to instructions in [3.1 Import Model & Animations](#31-import-model--animations) These steps are necessary before loading animations onto any armature.

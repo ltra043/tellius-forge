@@ -254,7 +254,7 @@
                   </font>
                  </property>
                  <property name="toolTip">
-                  <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;br/&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                  <string/>
                  </property>
                  <property name="text">
                   <string>Select Input Folder</string>
@@ -341,7 +341,7 @@
                   </font>
                  </property>
                  <property name="toolTip">
-                  <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;br/&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                  <string/>
                  </property>
                  <property name="text">
                   <string>Select Output Folder</string>
@@ -413,7 +413,7 @@
              <x>0</x>
              <y>0</y>
              <width>332</width>
-             <height>449</height>
+             <height>473</height>
             </rect>
            </property>
            <layout class="QVBoxLayout" name="verticalLayout_15">
@@ -427,17 +427,6 @@
               <property name="text">
                <string>1. Make additional bones invisible</string>
               </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QFrame" name="frame_1_input">
-              <property name="frameShape">
-               <enum>QFrame::Shape::NoFrame</enum>
-              </property>
-              <property name="frameShadow">
-               <enum>QFrame::Shadow::Raised</enum>
-              </property>
-              <layout class="QVBoxLayout" name="verticalLayout_5"/>
              </widget>
             </item>
             <item>
@@ -472,6 +461,37 @@ Use to make a bone fully invisible (scale=0) for the animation duration.</string
              </widget>
             </item>
             <item>
+             <widget class="QFrame" name="frame_2">
+              <property name="frameShape">
+               <enum>QFrame::Shape::NoFrame</enum>
+              </property>
+              <property name="frameShadow">
+               <enum>QFrame::Shadow::Raised</enum>
+              </property>
+              <layout class="QVBoxLayout" name="verticalLayout_16">
+               <property name="leftMargin">
+                <number>36</number>
+               </property>
+               <item>
+                <widget class="QLabel" name="label_3">
+                 <property name="maximumSize">
+                  <size>
+                   <width>16777215</width>
+                   <height>16777215</height>
+                  </size>
+                 </property>
+                 <property name="text">
+                  <string>IMPORTANT: After running this edit, you should return to the Start page and run Edit Option 4 to sort animation data. This ensures data is in the expected order and there are no conflicting transforms on the same bone.</string>
+                 </property>
+                 <property name="wordWrap">
+                  <bool>true</bool>
+                 </property>
+                </widget>
+               </item>
+              </layout>
+             </widget>
+            </item>
+            <item>
              <spacer name="verticalSpacer_5">
               <property name="orientation">
                <enum>Qt::Orientation::Vertical</enum>
@@ -482,7 +502,7 @@ Use to make a bone fully invisible (scale=0) for the animation duration.</string
               <property name="sizeHint" stdset="0">
                <size>
                 <width>20</width>
-                <height>50</height>
+                <height>20</height>
                </size>
               </property>
              </spacer>
@@ -572,22 +592,6 @@ Use to make a bone fully invisible (scale=0) for the animation duration.</string
                </item>
               </layout>
              </widget>
-            </item>
-            <item>
-             <spacer name="verticalSpacer_3">
-              <property name="orientation">
-               <enum>Qt::Orientation::Vertical</enum>
-              </property>
-              <property name="sizeType">
-               <enum>QSizePolicy::Policy::Fixed</enum>
-              </property>
-              <property name="sizeHint" stdset="0">
-               <size>
-                <width>20</width>
-                <height>20</height>
-               </size>
-              </property>
-             </spacer>
             </item>
             <item>
              <widget class="QLabel" name="label_1_status">

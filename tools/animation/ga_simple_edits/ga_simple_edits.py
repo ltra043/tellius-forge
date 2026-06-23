@@ -68,7 +68,7 @@ class MainWindow(QMainWindow):
         self.button_3_run.clicked.connect(lambda: run_3_shift(self))
 
         # Radio buttons
-        self.radio_4.toggled.connect(lambda: select_4(self))
+        self.radio_4.toggled.connect(lambda: toggle_4(self))
 
 
 def goto_next(self):
@@ -160,8 +160,8 @@ def goto_0(self):
     clean_pack(self)
 
 
-def select_4(self):
-    print("Running select_4(self) ...")
+def toggle_4(self):
+    print("Running toggle_4(self) ...")
     if self.radio_4.isChecked():
         self.lineEdit_0_output.setEnabled(False)
         self.button_0_output.setEnabled(False)
@@ -169,7 +169,7 @@ def select_4(self):
         self.button_0_output.setText(
             "Output will overwrite input for this edit"
             )
-        self.button_0_next.setText("Run Organize Edit")
+        self.button_0_next.setText("Run Sorting Edit")
         self.lineEdit_0_input.setToolTip(
             "Choose an input .ga file or a folder containing .ga files"
             )
@@ -518,9 +518,54 @@ def edit_invis(ga_file, data_dict: dict, misc_dict: dict, bone_ids: list):
             next_frame_start = bytes.fromhex(
                 hex(next_frame_start_int)[2:].zfill(8)
                 )
+    '''Modify Existing Data if Bone ID already in Table'''
+    table_data = data_dict['table_data']
+    bone_count = int(len(table_data)/16)
+    # print(f'bone_count: {bone_count}')
+    # bone_table_ptr = struct.unpack_from('>I', data, 0x20)[0]
+    # channel_data_ptr = struct.unpack_from('>I', data, 0x24)[0]
+    # fcurve_data_ptr = struct.unpack_from('>I', data, 0x2C)[0]
+
+    # --- Parse bone table ---
+    row_data = []
+    table_bones = []
+    for row in range(bone_count):
+        offset = row*16
+        data = list(struct.unpack_from('>IIII', table_data, offset))
+        bone_id, channel_mask, channel_start, channel_count = data
+        row_data.append(data)
+        table_bones.append(bone_id)
+        # print(f'data: {data}')
+
+    # for bone in bone_ids:
+    #     bone = int(bone, 16)
+    #     if bone in table_bones:
+    #         row = table_bones.index(bone)
+    #         row_data[row][0] = 255
+    #         print(f'bone ID {bone} in table at row {row}')
+    #         print(f'row_data[{row}]: {row_data[row]}')
+
+    table_data = bytearray(len(table_data))
+    for row, data in enumerate(row_data):
+        offset = row*16
+        bone_id, channel_mask, channel_start, channel_count = data
+        struct.pack_into('>IIII',
+                         table_data,
+                         offset,
+                         bone_id,
+                         channel_mask,
+                         channel_start,
+                         channel_count
+                         )
+
+    # for data in row_data:
+    #     for value in data:
+    #         table_data.append(value)
+    # table_data = bytearray(table_data)
+    print(f'table_data_size: {len(table_data+invis_table_bytes)} bytes')
 
     '''Update Pointers & File Info'''
-    table_data = data_dict['table_data']
+    # table_data = data_dict['table_data']
     # unused_table_data = data_dict['unused_table_data']
     meta_data = data_dict['meta_data']
     frame_data = data_dict['frame_data']
@@ -551,6 +596,7 @@ def edit_invis(ga_file, data_dict: dict, misc_dict: dict, bone_ids: list):
     file_info[44:48] = frame_ptr
 
     data_dict['file_info'] = file_info
+    data_dict['table_data'] = table_data
     data_dict['invis_table_bytes'] = invis_table_bytes
     data_dict['invis_meta_bytes'] = invis_meta_bytes
     data_dict['invis_frame_bytes'] = invis_frame_bytes
@@ -1049,11 +1095,14 @@ def clean_pack(self):
     input_dir, output_dir, input_pack, output_pack, input_file = list(
         directory_dict.values()
         )
-
-    if not any(input_pack.iterdir()):
+    if input_pack.exists() and not any(input_pack.iterdir()):
         input_pack.rmdir()
-    if not any(output_pack.iterdir()):
+    if output_pack.exists() and not any(output_pack.iterdir()):
         output_pack.rmdir()
+    # if not any(input_pack.iterdir()):
+    #     input_pack.rmdir()
+    # if not any(output_pack.iterdir()):
+    #     output_pack.rmdir()
 
 
 def show_help():
@@ -1062,6 +1111,7 @@ def show_help():
     print("\t1. Make additional bones invisible.")
     print("\t2. Replace the bone in an existing transformation")
     print("\t3. Fix bone IDs after adding/deleting skeleton bones.")
+    print("\t4. Sort animation data by ascending bone ID.")
     print()
 
 
