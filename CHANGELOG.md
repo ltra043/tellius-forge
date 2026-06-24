@@ -31,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Feature to `ga_simple_edits.py` and `ga-simple-edits.exe` allowing sorting of data by bone ID (ascending)
+- Utility script `ga_sort_bones.py` to independently handle sorting of data by bone ID (ascending)
+- CLI `-h` and `--help` code to provide information about tool scripts. Added to `ga_simple_edits.py`, `g_analyzer.py`, `ga_sort_bones.py`, and `ga_bookmark.py`.
 - User-oriented `./docs/` files, including:
     - `animation-weapon-visibility-edits.md`
     - Updated `./docs/README.md`
@@ -41,7 +43,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New images and gifs embedded in other files added to `./images/`
 - Icons in png format with multiple color or transparent background fill options
 - Transparent-background icons in ico format with [16x16, 32x32, 64x64, 128x128, 256x256] resolutions
-- `CHANGELOG.md` in main
+- `CHANGELOG.md` in main to track all changes between releases
+- Detailed installation instructions for Python and utility scripts to README.md
 
 ### Fixed
 
@@ -69,7 +72,7 @@ This is the initial public release.
     - Contains `gs-texture-edits.exe`, `ga-simple-edits.exe`, and  `ga-simple-edits.ui`
 - Main `README.md` containing introduction, list of features, recommended starting points, compatibility & limitations, list of required downloads, Blender Add-on install instructions, repository structure tree, credits, license, disclaimer, and related search terms
 - Blender plugin source code in `./plugin/`
-- Utility tool source code int `./tools/`, including:
+- Utility tool source code in `./tools/`, including:
     - `ga-simple-edits` python script, ui file, and requirements
     - `ga-bookmark.py`
     - `gs-texture-edits` python script and requirements
@@ -89,5 +92,5 @@ This is the initial public release.
 
 
 [unreleased]: https://github.com/ltra043/tellius-forge/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/ltra043/tellius-forge/compare/v0.2.0...v0.2.0
+[0.2.0]: https://github.com/ltra043/tellius-forge/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ltra043/tellius-forge/releases/tag/v0.1.0
