@@ -2,12 +2,12 @@
 
 <p align="center"><i>
 Basic animation (in)visibility editing using hex editing, Blender, or Tellius Forge Toolkit.<br>
-<a href="https://github.com/ltra043/tellius-forge/blob/main/docs/animation-weapon-visibility-edits.md">See Video Tutorial (TODO)</a></i><br>
+<a href="https://youtu.be/A7ClSwN3J7A">See Video Tutorial</a></i><br>
 </p>
 
 <p>
 <b>Author:</b> Jade (ltra043)<br>
-<b>Date:</b> 2026-06-12<br>
+<b>Date:</b> 2026-06-23<br>
 <b>Version:</b> <code>Tellius Forge v0.2.0</code><br>
 </p>
 
@@ -17,33 +17,33 @@ Basic animation (in)visibility editing using hex editing, Blender, or Tellius Fo
 <details>
 <summary>Table of Contents</summary>
 
-1. [Identify Weapon Bone IDs](#1-determine-bone-ids)
+1. [Identify Weapon Bone IDs](#1-identify-weapon-bone-ids)
 2. [Make Bone(s) Invisible Using Tellius Forge Toolkit](#2-make-bones-invisible-using-tellius-forge-toolkit)
 3. [Make Bone(s) Invisible Using Blender](#3-make-bones-invisible-using-blender)
 4. [Make Bone(s) Invisible Using a Hex Editor](#4-make-bones-invisible-using-a-hex-editor)
-5. [Testing Modified Animations](#5-testing-modified-animations)
+5. [Sort Animation Data](#5-sort-animation-data)
+6. [Testing Modified Animations](#6-testing-modified-animations)
 
 </details>
 
 <details>
 <summary>Resources & Requirements</summary>
 
-1. [Tellius Forge](https://github.com/ltra043/tellius-forge/releases/latest) (Blender Addon & Toolkit)
-   - Non-Windows users may need to download and use the source code and assets at [ga_simple_edits/](../tools/animation/ga_simple_edits/)
-2. [Lumina](https://github.com/thane98/lumina) by thane98
-3. [ImHex](https://imhex.werwolv.net/) or any hex editor
+1. [Tellius Forge] (Blender Addon & Toolkit)
+   - Non-Windows users may need to download and use the source code and assets at [ga_simple_edits/]
+2. [Lumina] by thane98
+3. [ImHex] or any hex editor
    - Only needed if you choose to hex edit animations
-4. [Video Tutorial] (TODO)
-
+4. [Video Tutorial](https://youtu.be/A7ClSwN3J7A)
 
 Optional / Recommended:
-1. Programmer Calculator or any hex calculator
-2. [Skeleton Analyzer](../tools/skeleton/g-skeleton-analyzer/g_skeleton_analyzer.py): Summarizes skeleton data, including provision of a table of bone IDs and bone names.
-3. [Body & Skeleton Workflow](./body-skeleton-workflow.md)
-3. [Youtube Tutorial Playlist](https://youtube.com/playlist?list=PL650N9tNdfYazuxS5b63BzaUKxZLErT0e)
-4. [Tellius Animation File Format](../research/animation/tellius-animation-file-format.md)
-5. [Tellius Skeleton File Format](../research/skeleton/tellius-skeleton-file-format.md)
-6. Notepad++, Notepad, or any note-taking tool
+1. [Skeleton Analyzer]: Summarizes skeleton data, including provision of a table of bone IDs and bone names.
+2. [Body & Skeleton Workflow]
+3. [Youtube Tutorial Playlist]
+4. [Tellius Animation File Format]
+5. [Tellius Skeleton File Format]
+6. Programmer Calculator or any hex calculator
+7. Notepad++, Notepad, or any note-taking tool
 
 </details>
 
@@ -55,7 +55,7 @@ Optional / Recommended:
 ### Prerequisites
 This guide is written for the scenario where you have added new weapon mesh and bones to a model and want to update the model's animations. 
 
-Before following this guide, you should already have modified assets as outlined in *Body & Skeleton Workflow* (available in [Resources & Requirements](#reader-information)). 
+Before following this guide, you should already have modified assets as outlined in [Body & Skeleton Workflow]. 
 
 This includes:
 
@@ -81,14 +81,14 @@ There are 3 methods to update bone visibility. Pros and cons are listed for each
 ---
 
 ## 1. Identify Weapon Bone IDs
-For every method, you will need to know the bone ID of bones you want to make invisible. This can be looked up using Blender, the *Skeleton Analyzer Python script* (available in [Resources & Requirements](#reader-information), or a hex editor.
+For every method, you will need to know the bone ID of bones you want to make invisible. This can be looked up using Blender, the [Skeleton Analyzer] Python script, or a hex editor.
 
 
 ### 1.1 Identify Weapon Bone IDs in Blender (recommended):
 All mentioned downloads and reference materials are linked in [Resources & Requirements](#reader-information).
 
-1. Download `tellius-forge.py` from the *latest release of Tellius Forge*.
-2. Install the Blender Addon `tellius-forge.py`. See the *Getting Started* guide for detailed installation instructions.
+1. Download `tellius-forge.py` from the latest release of [Tellius Forge].
+2. Install the Blender Addon `tellius-forge.py`. See the [Getting Started] guide for detailed installation instructions.
 3.  Go to **File > Import > FE9/FE10 Body + Skeleton (.gs + .g)**. Import your modified body+skeleton.
 4. Select the armature and enter **Pose Mode**
 5. Select a weapon bone. This should be the main bone that influences a weapon mesh.
@@ -104,7 +104,7 @@ You must have **Python installed**. You also need to **know the names of the bon
 
 All mentioned downloads and reference materials are linked in [Resources & Requirements](#reader-information).
 
-1. Download the *Skeleton Analyzer Python script*. 
+1. Download the [Skeleton Analyzer] Python script. 
 2. Open a command-line terminal.
 3. To see more information, run the help command:
 `python "/path/to/g-skeleton-analyzer.py" -h`
@@ -137,18 +137,18 @@ This is the **least recommended option**. I only include it so you might underst
 **About:** 
 This is the **simplest and fastest** option. It should take a maximum of few minutes.
 
-You will need to know the bone ID of bones you want to make invisible. This can be looked up using Blender, a hex editor, or the *Skeleton Analyzer Python script*.
+You will need to know the bone ID of bones you want to make invisible. This can be looked up using Blender, a hex editor, or the [Skeleton Analyzer] Python script.
 
 All mentioned downloads and reference materials are linked in [Resources & Requirements](#reader-information).
 
 ### 2.1 Download & Install
 
-1. Download the *latest release of Tellius Forge*.
-   - Non-Windows users may need to download the source code and assets at `tools/animation/ga_simple_edits/`
+1. Download the latest release of [Tellius Forge].
+   - Non-Windows users may need to download the source code, assets, and modules at [ga_simple_edits/]
    - `ga-simple-edits.exe` and `ga_simple_edits.py` are considered equivalent programs. Swap out mention of the `.exe` for `.py` in instructions if using the script. 
 2. Extract all from `tellius-forge-toolkit.7z`
 3. **IMPORTANT!** The app `ga-simple-edits.exe` and the folder `assets/` must be kept in the same directory. Do not rename `assets/` or any files inside. 
-4. Install the Blender Addon `tellius-forge.py`. See the *Getting Started* guide for detailed installation instructions.
+4. Install the Blender Addon `tellius-forge.py`. See the [Getting Started] guide for detailed installation instructions.
 
 ### 2.2 App Start Page
 
@@ -211,11 +211,11 @@ This is a **simple option** where it is easy to **visually understand** what you
 
 All mentioned downloads and reference materials are linked in [Resources & Requirements](#reader-information).
 
-1. Install the Blender Addon `tellius-forge.py`. See *Getting Started* for detailed installation instructions.
+1. Install the Blender Addon `tellius-forge.py`. See [Getting Started] for detailed installation instructions.
 2. Go to **File > Import > FE9/FE10 Body + Skeleton (.gs + .g)**. Import your modified body + skeleton. 
 3. **Apply the Armature:** Select the mesh and open **Modifier Properties**. Duplicate the armature modifier and apply the duplicate. 
 4. **Apply Pose as Rest Pose:** Select the armature and enter **Pose Mode**. Press **Ctrl+A** and select *Apply Pose as Rest Pose*.
-   1. You should be familiar with the process in steps 3 and 4 from modifying models as outlined in the *Body & Skeleton Workflow* guide.
+   1. You should be familiar with the process in steps 3 and 4 from modifying models as outlined in the [Body & Skeleton Workflow] guide.
    2. Steps 3 and 4 are necessary before loading animations onto any armature.
 5. Go to **File > Import > FE9/FE10 Animation (.ga)**. Import all animations that need to be modified.
 
@@ -363,7 +363,7 @@ White Arrow (bottom): Export Animations button
 **About:**  
 This is the option I **least recommend**. It is **slow** and has **high likelihood of error**.  I will cover it because it demonstrates the same hex data changes the other two options make. The other options are faster and less involved.
 
-This guide does not cover the hex data format in depth. See *Tellius Animation File Format* and *Tellius Skeleton File Format*, available in [Resources & Requirements](#reader-information), for a detailed analysis.
+This guide does not cover the hex data format in depth. See [Tellius Animation File Format] and [Tellius Skeleton File Format] for a detailed analysis.
 
 1. Open an animation in a hex editor.
 2. Find the **bone count** at byte 0x1F.
@@ -426,7 +426,7 @@ This guide does not cover the hex data format in depth. See *Tellius Animation F
 
 ### 4.4 Update Header and Footer Pointers
 1. Add `(0x10 + 0x24 + 0x0C) * num_added_bones` to all footer pointer values.
-   1. If you need help identifying all footer pointers, read about the complex footer data structure in the *Skeleton Format Analysis* research document, available in [Resources & Requirements](#reader-information).
+   1. If you need help identifying all footer pointers, read about the complex footer data structure in the [Tellius Skeleton File Format] research document.
 2. Add `0x0C * num_added_bones` to the header pointer.
 
 ---
@@ -434,7 +434,7 @@ This guide does not cover the hex data format in depth. See *Tellius Animation F
 ## 5. Sort Animation Data
 
 ### 5-1. Normal Sorting Patterns
-If you used the Tellius Forge Toolkit or Hex Edit options to make bone(s) invisible, your added data is likely out-of-order. 
+If you used the **Tellius Forge Toolkit** or **Hex Edit** options to make bone(s) invisible, your added data is likely out-of-order. 
 
 Animation data is typically sorted by:
 | Data Type | Sorted by (ascending) |
@@ -465,8 +465,33 @@ I do not recommend hex editing to sort the data, as it is easy to introduce erro
 ## 6. Testing Modified Animations
 
 1. Import animations onto your *animation-prepared model* in Blender to test they function as expected.
-   1. *Animation-prepared* refers to instructions in [3.1 Import Model & Animations](#31-import-model--animations) These steps are necessary before loading animations onto any armature.
+   1. *Animation-prepared* refers to instructions in [3.1 Import Model & Animations](#31-import-model--animations). These steps are necessary before loading animations onto any armature.
 2. Verify the intended weapon appears or disappears correctly.
 3. Play through the entire animation duration.
 4. Confirm no other weapon meshes appear or disappear unexpectedly.
 5. After checking in Blender, test animations in-game.
+
+<!-- Links Start -->
+[Tellius Forge]: https://github.com/ltra043/tellius-forge/releases/latest
+
+<!-- Tools -->
+[ga_simple_edits/]: ../tools/animation/ga_simple_edits/
+[Skeleton Analyzer]: ../tools/skeleton/g_analyzer.py
+
+<!-- Docs -->
+[Getting Started]: ./getting-started.md
+[Body & Skeleton Workflow]: ./body-skeleton-workflow.md
+
+<!-- Research -->
+[Tellius Animation File Format]: ../research/animation/tellius-animation-file-format.md
+[Tellius Skeleton File Format]: ../research/skeleton/tellius-skeleton-file-format.md
+
+<!-- Videos -->
+[Video Tutorial]: https://youtu.be/hTaJZR31x1s
+[Youtube Tutorial Playlist]: https://youtube.com/playlist?list=PL650N9tNdfYazuxS5b63BzaUKxZLErT0e
+
+<!-- Other -->
+[Lumina]: https://github.com/thane98/lumina
+[ImHex]: https://imhex.werwolv.net/
+
+<!-- Links End -->
