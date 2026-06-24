@@ -14,8 +14,7 @@ import struct
 from modules.ga_sort_bones import find_ga_files, process_ga
 
 
-# resource_path.reset(relative_path)
-# return base_path.joinpath(relative_path)
+# script version
 def resource_path(relative_path):
     """ Redirect referenced paths
     Redirects the paths of external files referenced by this script.
@@ -28,14 +27,34 @@ def resource_path(relative_path):
     :return: os.path.join(base_path, relative_path): Path
     """
     try:
-        base_path = sys._MEIPASS2
+        base_path = Path(sys._MEIPASS)
     except Exception:
         # base_path = os.path.abspath(".")
         base_path = Path(__file__).parent
         base_path = base_path.resolve()
 
-    # return os.path.join(base_path, relative_path)
     return base_path.joinpath(relative_path)
+
+# # exe version
+# def resource_path(relative_path):
+#     """ Redirect referenced paths
+#     Redirects the paths of external files referenced by this script.
+#     Wrap all filenames with the function resource_path()
+
+#     Modified to use pathlib instead of os.
+#         os version from https://stackoverflow.com/questions/31836104
+
+#     :param relative_path: Path
+#     :return: os.path.join(base_path, relative_path): Path
+#     """
+#     try:
+#         base_path = Path(sys._MEIPASS)
+#     except Exception:
+#         # base_path = os.path.abspath(".")
+#         base_path = Path(".")
+#         base_path = base_path.resolve()
+
+#     return base_path.joinpath(relative_path)
 
 
 assets_path = Path(resource_path('assets'))
@@ -1095,14 +1114,13 @@ def clean_pack(self):
     input_dir, output_dir, input_pack, output_pack, input_file = list(
         directory_dict.values()
         )
-    if input_pack.exists() and not any(input_pack.iterdir()):
-        input_pack.rmdir()
-    if output_pack.exists() and not any(output_pack.iterdir()):
-        output_pack.rmdir()
-    # if not any(input_pack.iterdir()):
-    #     input_pack.rmdir()
-    # if not any(output_pack.iterdir()):
-    #     output_pack.rmdir()
+
+    if input_pack.exists():
+        if not any(input_pack.iterdir()):
+            input_pack.rmdir()
+    if output_pack.exists():
+        if not any(output_pack.iterdir()):
+            output_pack.rmdir()
 
 
 def show_help():
@@ -1178,7 +1196,7 @@ def main_ui():
     widget.addWidget(main_window)
     widget.setGeometry(300, 100, 580, 480)
     widget.show()
-    exit(app.exec())
+    sys.exit(app.exec())
 
 
 if __name__ == '__main__':
