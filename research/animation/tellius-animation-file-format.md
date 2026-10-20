@@ -1,11 +1,10 @@
-
 <h1 align="center">Tellius Animation File Format</h1>
 
 <p align="center"><i>
 Reverse-engineering notes on the format of Fire Emblem 9 and Fire Emblem 10 animation (<code>.ga</code>) files. <br>
-See <a href="../body/tellius-body-file-format.md">Tellius Body File Format</a> and <a href= "../skeleton/tellius-skeleton-file-format.md">Tellius Skeleton File Format</a> for analysis of other asset formats.</i><br><br>
+See <a href="../body/tellius-body-file-format.md">Tellius Body File Format</a> and <a href="../skeleton/tellius-skeleton-file-format.md">Tellius Skeleton File Format</a> for analysis of other asset formats.</i><br><br>
 <b>Author:</b> Jade (ltra043)<br>
-<b>Last Updated:</b> 2026-06-01  
+<b>Last Updated:</b> 2026-10-13 (v2.0.1: terminology: fraction bits, first_key; 2026-10-04 v2.0.0: Header / Bone Table / Curve Table / Keyframe Data / Footer; channels, absolute values, footer slots and event track; unified terminology)
 </p>
 
 <details>
@@ -15,23 +14,28 @@ See <a href="../body/tellius-body-file-format.md">Tellius Body File Format</a> a
 
 </details>
 
-
 ## Reader Information
 - All multi-byte integers and floats are **big-endian** unless noted otherwise.
 - **All listed offsets and size values are decimal values** unless prefixed with `0x` to indicate it is a hex value.
+- **Bone index** means the index of a bone in the skeleton's bone array (the position of its record in the `.g` file, also stored in the record's `bone_index` field). Names such as *value block*, *rotate pivot*, *seed matrix*, *world matrix* and *bind pose* are used as defined in the [Tellius Skeleton File Format](../skeleton/tellius-skeleton-file-format.md) notes.
 
 <details>
 <summary><b>Table of Contents</b></summary>
  
-1. **[General Structure & Brief Overview](#1-general-structure--brief-overview)**
-2. **Detailed Overview**
-    - [2a. File Info](#2a-file-info)
-    - [2b. Bone Table](#2b-bone-table)
-    - [2c. Channel Data](#2c-channel-data)
-    - [2d. F-Curve Data](#2d-f-curve-data)
-    - [2e. Footer Data](#2e-footer-data) 
-        - [Footer Data 1](#footer-data-1)
-        - [Footer Data 2](#footer-data-2)
+1. **[General Structure](#1-general-structure)**
+2. **[Header](#2-header)**
+3. **[Bone Table](#3-bone-table)**
+4. **[Curve Table](#4-curve-table)**
+5. **[Keyframe Data](#5-keyframe-data)**
+6. **[Footer](#6-footer)**
+    - [6.1 FE9 Footer](#61-fe9-footer)
+    - [6.2 FE10 Footer](#62-fe10-footer)
+    - [6.3 Footer Slot 0: Event Track](#63-footer-slot-0-event-track)
+    - [6.4 Footer Slot 1: Visibility (FE10)](#64-footer-slot-1-visibility-fe10)
+    - [6.5 Other Footer Slots](#65-other-footer-slots)
+7. **[How an Animation Drives the Skeleton](#7-how-an-animation-drives-the-skeleton)**
+8. **[Terminology Notes](#8-terminology-notes)**
+9. **[Remaining Unknowns](#9-remaining-unknowns)**
 
 </details>
 
@@ -40,439 +44,322 @@ See <a href="../body/tellius-body-file-format.md">Tellius Body File Format</a> a
 
 1. [FE9 ImHex bookmarks](https://drive.google.com/file/d/1gEC-5amlmNdOrbVD1ffcL6yReEkhC1Zu/view?usp=drive_link) for `knight’s atk1_bw.ga`  
 2. [FE10 ImHex bookmarks](https://drive.google.com/file/d/1R0Uo3316i4A9-4jWofwuXbDdNJDC2d2W/view?usp=drive_link) for fe10 `fighter3_n’s atk_2.ga` (handaxe)  
-3. [ga-bookmark.py](.../tools/animation/ga-bookmark.py): creates **ImHex bookmarks** for animation files
+3. [ga-bookmark.py](../../tools/animation/ga-bookmark.py): creates **ImHex bookmarks** for animation files
 4. [App for Tellius Unit Map Model Porting](https://github.com/ltra043/tellius-unit-model-ports) 
     - Currently supports FE10 to FE9 porting  
 5. [FE10 ImHex bookmarks](https://drive.google.com/file/d/1wBQgxkHshERlykjIj5WD58jmAeRpy2Wl/view?usp=drive_link) for fe10 `fighter3_n’s skeleton.g`  
 6. [Skeleton file viewer](https://docs.google.com/spreadsheets/d/1zbN7nSeyl0lY_XA7-t0zFUdaRjoDEF3c_laifMrM5Pc/edit?gid=1433193727#gid=1433193727&range=A1) : spreadsheet that parses and organizes skeleton data
-7. [g-analyzer.py](.../tools/skeleton/g-analyzer.py): parses skeleton data and creates detailed summary
+7. [g-analyzer.py](../../tools/skeleton/g-analyzer.py): parses skeleton data and creates detailed summary
 8. [How to port and edit ymu animation files - guide](https://docs.google.com/document/d/1oIBy46jQPswIIK-ls6cR9AbOMlFR7gbLdcyi7juQHbc/edit?usp=sharing)
+9. [Tellius Forge Blender plugin](https://github.com/ltra043/tellius-forge/releases/latest): supports import, modification, and export of FE9/FE10 animation files.
+10. [TelliusModding](https://github.com/klg-tellius/TelliusModding/tree/main): independent FE9 research project (readers for `.g`, `.gs`, `.ga`, and an article archive)
 
 </details>
 
 ## Research Status
-**Testing Scope:**
-The following observations are primarily based on comparison of `ymu` animations. They might not be true for EVERY animation. 
-  - The format is likely similar for `zu` animations.
-  - Effect animations in `yme` have much more data present. The format is the same until the Footer Data section. 
 
-  <details>
+**Credits.** This reference contains Jade's own analysis, cross-checked against the independent FE9 research published in the [TelliusModding](https://github.com/klg-tellius/TelliusModding/tree/main) project by klg-tellius. Terminology differences are listed in [§8](#8-terminology-notes).
+
+**Testing scope.**
+- TelliusModding FE9 research covers the whole FE9 disc (4,422 animation files) and rebuilds every shipped `.ga` byte-for-byte, so the physical layout of the Header, Bone Table, Curve Table, Keyframe Data and FE9 Footer is **confirmed**. Its claims are **FE9-only**.
+- Own testing concentrated on `ymu` (map model) animations of both games, with most in-game debugging on FE9. A scan of 7,460 `ymu` animation files (FE10 6,006, FE9 1,454) found header word 3 = `0x11` and header word 10 = 0 in every file, and no channel number outside 0–8 and 12–14 ([§4](#4-curve-table)).
+- `zu` (battle) animations are expected to follow the same format; `yme` (effect) and scenery animations carry much more footer data, and use the same format up to the Footer.
+- FE10 behavior is assumed identical to FE9 unless a difference is stated, with the exceptions of the Footer ([§6.2](#62-fe10-footer)) and scale handling ([§3](#3-bone-table)). Whether FE10 interpolates keys linearly is untested.
+
+<details>
 <summary><b>Research Status Legend</b></summary>
 
-- **Confirmed** = verified through direct testing and file modification
-  - Statements of fact, concluded from very strong patterns and/or in-game debugging
-- **Strong evidence** = observed consistently across many files but not fully proven
-  - May be based on strong but not always applicable patterns
-  - May be based on a smaller sample size
-  - May be very consistent but not yet confirmed in-game
-  - Keywords: likely, seems, usually, corresponds
-- **Hypothesis** = plausible interpretation requiring further validation. 
-  - May be based on observations and trends from only a few samples. 
-  - Untested or difficult to verify
-  - Keywords: Possible, may be related to..., potentially, theorize
+- **Confirmed** = verified through direct testing, file modification, in-game debugging, or exact reproduction of the shipped files
+- **Strong evidence** = observed consistently across many files but not fully proven (keywords: likely, seems, usually, corresponds)
+- **Reported** = plausible statement made in external references, but not verified by Jade.
+- **Hypothesis** = plausible interpretation requiring further validation (keywords: possible, may be related to, potentially, theorize)
 
 </details>
 
-## 1. General Structure & Brief Overview
+---
 
-There are 4 main sections and 1 optional section to every .ga file in the ymu folder. 
+## 1. General Structure
 
-1. File Info  
-2. Bone Table  
-3. Channel Data  
-4. F-Curve Data  
-5. Footer Data (not included in every file)
-    
+An animation file holds the curves that overwrite values of a skeleton's bones over time. There are four main sections and one optional section:
 
-**File Info**
+| Offset | Section | Content |
+|--------|---------|---------|
+| `0x00` | **Header** | 12 uint32 words (0x30 bytes): footer offset, game flag, format flags, loop flag, start/end frames, section pointers |
+| `0x30` | **Bone Table** | one 16-byte record per animated bone: `(bone_index, channel_mask, first_curve, curve_count)` |
+| `curve_table_offset` | **Curve Table** | one 12-byte record per curve: channel, fraction bits, end frame, key count, first key |
+| `keyframe_data_offset` | **Keyframe Data** | `(frame, value)` pairs, 4 bytes each, one run per curve |
+| `footer_offset` | **Footer** (optional) | pointers and data blocks; event track and, in FE10, visibility |
 
-* Bytes 0x00 - 0x2f  
-* Defines the start/end frames of the animation.   
-* Includes address markers / pointers for each of the other 4 sections.   
-* Includes # rows in Bone Table  
-* Includes other unknown but consistent data
-
-**Bone Table:**
-
-* 4-column table; 4 bytes per column
-* Ties **bones from the skeleton.g** file to data in the Channel Data entries
-
-**Channel Data:**
-
-* Connects Bone Table entries to F-Curve Data  
-* Defines **channel type** (transformation type), **scale factor**, last keyframe, # keyframes, and **starting index in F-Curve Data**  
-* Organized in entries/chunks of **0x0c bytes**
-
-**F-Curve Data:**
-
-* Data which establishes F-Curve shape  
-* Organized into **datasets** of varying size  
-* Within a dataset, data is organized into 4-byte **keyframes**.
-  * Keyframes are made of 2-byte pairs (frame, transformation value)
-
-**Footer Data:**
-
-* **Optional** last section  
-* Can include up to 3 pointers  
-* FE9: typically 0 or 1 pointer  
-* FE10: typically 3 pointers; sometimes 0 or 1 pointer  
-* Contains up to 3 sub-sections  
-  * **Footer Pointers:** Pointers & related data  
-  * **Footer Data 1:** *Damage & Effect timing.* Functions similarly in FE9 and FE10  
-  * **Footer Data 2:** *Controls visibility.* Only present in some FE10 animations. Makes parts of the skeleton (usually unequipped weapons) invisible for all or part of the animation duration. 
-
-
-
-
-## 2. Detailed Overview
-
-
-### 2a. File Info
-
-<p align="center" style="font-size: 14px;">
-  <img src="../../images/animation/ga-hex-file-info.png" alt="Screenshot of bookmarked File Info hex data" width = 635>
-  <br>
-  <em>Image 1: File Info bookmarks from FE10 fighter3_n atk_2.ga</em>
-</p>
-
-**Pointer to Footer Data Pointer(s)**
-
-* Bytes 0x00 - 0x03 *(red) :*  
-* If there is no footer data, the value is 00 00 00 00  
-* **For FE9**: if there is footer data, this pointer **points directly to Footer Pointer 1** (there is only 1 Footer Pointer)  
-* **For FE10:** if there is footer data, this pointer **points to 0x0c bytes before the end of the file**   
-  * If there is Footer Data, there can be 1 or 3 Footer Pointers near EOF
-  * More info in [Footer Data](#footer-data) section
-
-**Bytes 0x04 - 0x0b**
-* Bytes 0x004 - 0x07: `00 00 00 00`  
-* Byte 0x08 *(orange)*: **Game Flag**
-  * `00` for FE9
-  * `01` for FE10   
-* Bytes 0x09 - 0x0e: all `00`  
-* Byte 0x0f *(yellow)*: `0x11`
-
-**Playback Info**
-
-* Bytes 0x10 - 0x13: **Loop Flag** 
-  * `0x00000000` = no loop (default)  
-  * `0x00000001` = loop (animation repeats)  
-* Bytes 0x14 - 0x17: **start frame** of animation   
-  * Usually only 1 byte at 0x17 *(light green)*. Remaining bytes are `00`  
-  * **FE9:** usually `00` or `01`  
-  * **FE10:** usually `00` or `01` EXCEPT for `motion*2_#.ga`   
-  * Increasing this value can make an animation take less time by making the playback start later in the animation data.   
-  * However, it needs to be **compatible with Footer Data 1**, or else the animation failsafe will trigger  
-    * More detail in [Footer Data 1](#footer-data-1)  
-* Bytes 0x18 - 0x1b *(dark green)* : **end frame** of animation  
-  * Usually only 1 byte at 0x1b. Preceding bytes are `00`  
-  * Decreasing this value can make an animation take less time by making it end earlier.   
-  * However, it needs to be **compatible with Footer Data 1**, or else the animation failsafe will trigger  
-    * More detail in [Footer Data 1](#footer-data-1)   
-* Bytes 0x1c - 0x1f *(light blue)*: **number of entries (rows) in Bone Table  **
-  * Usually only 1 byte at 0x1f. Other bytes are `00`
-
-**Main Data Pointers**
-
-Bytes 0x20 - 0x2f. Gives the **start address of each main data section:** Bone Table, Channel Data, and F-Curve Data 
-
-* Bytes 0x20 - 0x23 *(dark blue)* : Pointer to the **start of Bone Table**   
-  * Always `0x 00 00 00 30`  
-* Bytes 0x24 - 0x27 *(purple)* : Pointer to the **start of Channel Data**  
-  * Equal to 0x30 plus the size of Bone Table   
-    * **Bone Table size** is the **product** of `[number of Bone Table data entries]` and `[0x10 bytes per entry]`  
-* Bytes 0x28 - 0x2b: unknown, usually `0x 00 00 00 00`  
-* Bytes 0x2c - 0x2f *(pink)*: Pointer to the **start of F-Curve Data**  
-  * Equal to start of Channel Data plus size of Channel Data  
-    * **Channel Data size** is equal to the **product** of `[number of Channel Data entries]` and `[0x0c bytes per entry]`   
-    * *Number of Channel Data entries* is established in the Bone Table
+A **curve** is one animated value: one channel of one bone (for example *rotate Z of bone 12*). A bone's curves are consecutive in the Curve Table, and the Bone Table says which curves belong to which bone. The three sections are laid out back to back with no padding, and every shipped `.ga` rebuilds byte-for-byte from this layout. **Confirmed.**
 
 ---
 
-### 2b. Bone Table
+## 2. Header
 
-Ties bones from the skeleton.g file to sections of data in the Channel Data section. Establishes how many transformations a bone will undergo.
+**Size:** 48 bytes / 0x30 bytes, 12 big-endian uint32 words.
 
-#### Related notes about skeleton.g
+| Word | Offset | Field | Notes |
+|:---:|:---:|-------|-------|
+| 0 | `0x00` | footer_offset | File offset of the Footer, or 0 when there is none. Relocated by the loader. |
+| 1 | `0x04` | reserved | Always 0. Relocated by the loader. |
+| 2 | `0x08` | game_flag | The byte at `0x08` is the **game flag**: `00` FE9, `01` FE10. The remaining bytes of the word are 0. |
+| 3 | `0x0C` | format_flags | `0x11` on every file: bit 0 = Euler rotation, bit 1 = quaternion rotation (never set), bit 4 = int16 keys. Without bit 4 the engine reads a float/Hermite layout that no file uses. This is the "byte `0x0F`" of earlier notes. |
+| 4 | `0x10` | loop_flag | `0` = plays once, `1` = loops. See below. |
+| 5 | `0x14` | start_frame | The frame playback starts at, and the frame a loop restarts at. See below. |
+| 6 | `0x18` | end_frame | The frame playback ends (or loops) at. May run past the last keyframe, holding the final pose. |
+| 7 | `0x1C` | bone_count | Number of Bone Table records (one per animated bone). |
+| 8 | `0x20` | bone_table_offset | Always `0x30`. Relocated. |
+| 9 | `0x24` | curve_table_offset | `0x30 + 16 × bone_count`. Relocated. |
+| 10 | `0x28` | reserved | Always 0. Relocated (the loader treats it as a pointer slot). |
+| 11 | `0x2C` | keyframe_data_offset | `curve_table_offset + 12 × curve_count`. Relocated. |
 
-* See bookmarks for a skeleton file in [Additional Resources](#additional-resources).  
-* After a **header** of size 0x10 bytes, data is organized into **244-byte (0xF4) Bone Records**.
-* There is a **string pool** at the end of the file. The string pool is a **list of names for bones** in the skeleton.  
-* The **last 4 bytes of every 244 byte entry** is a **relative pointer to the String Pool**. It tells the **index of the first letter of a string** in the String Pool (index count starts at 0 for the first character of [unknown]).  
-* **Bone ID** is the *index of the full string in the string pool minus 0x01*.   
-  * Skip the first string in the string pool, “[unknown]”. The next string, usually “all”, is at full string index = 0x00. Add 0x01 for the index of each following string.  
-  * In each entry, the value at bytes 0xec-0xed = [Bone ID]*[0x10]  
-  * Use the linked skeleton file viewer spreadsheet or [g-analyzer.py](.../tools/skeleton/g-analyzer.py) in [Additional Resources](#additional-resources) to determine a skeleton’s bone IDs  
-* Animation files will use **bone ID in the Bone Table** to reference bones it wants to transform. 
+Words 0, 1, 8, 9, 10 and 11 are the file offsets the loader relocates into pointers (see [§7.2](#72-engine-routines)). **Confirmed.**
 
-#### Bone Table Composition
+**The curve count is not stored.** The Curve Table runs from `curve_table_offset` to `keyframe_data_offset`, always an exact multiple of 12 bytes: `curve_count = (keyframe_data_offset − curve_table_offset) / 12`.
 
-<p align="center" style="font-size: 14px;">
-  <img src="../../images/animation/ga-hex-bone-table-composition.png" alt="Bone Table bookmarks from fe10 fighter3_n atk_2.ga" width = 635>
-  <br>
-  <em>Image 2: Bone Table bookmarks from fe10 fighter3_n atk_2.ga</em>
-</p>
+**Playback range.**
+- **start_frame** is usually 0 or 1. In FE10 it is also commonly 0 or 1, except for the `motion*2_#.ga` animations. Raising it makes playback begin later in the data, which shortens an animation; lowering `end_frame` shortens it from the other end. **Confirmed**
+- Both must remain compatible with the event track ([§6.3](#63-footer-slot-0-event-track)): events are only collected from frames the playback actually passes. An event outside `[start_frame, end_frame]` is never received and the combat code falls back to its failsafe. **Confirmed** in game (own testing: the damage event frame must lie strictly inside the range).
+- Frame numbers are 16-bit in the file; in practice every frame is below 256.
 
-
-* **Number of entries** is established by the file’s byte 0x1f  
-* Each entry is **0x10 bytes** long  
-  * See Entry 0x00 bookmarked in (*red)* in *Image 2*.  
-* The table consists of 4 columns, each 0x04 bytes long  
-* Column 1 *(orange)*: **Bone ID**  
-  * Hex value of a bone ID that will be affected by animation transform(s)  
-  * Rows are ordered by **ascending bone ID**. Animation may behave unexpectedly if rows are out of order.
-  * **(In)visibility:** All bones in a skeleton are visible by default. If you want to make a bone invisible, you must include a scale transform to hide it.   
-    * **FE9:** handled in **main data** (Bone Table, Channel Data, and F-Curve Data)
-    * **FE10:** typically handled in **Footer Data 2**; sometimes in main data
-* Column 2 *(yellow)*: **Channel Mask**  
-  * Identifier for which of the 3, or combo of the 3, transform types a bone experiences  
-  * `0x20`: Scale
-  * `0x30`: Rotation 
-  * `0x08`: Location
-  * Add values together if multiple transform types occur.   
-    * E.g., `0x38` is common for the hip bone, which involves both location and rotation  
-  * **FE10:** Rarely involves Scale. Scale transforms are typically handled in **Footer Data 2**   
-* Column 3 *(green)*: **Starting entry index in Channel Data**  
-  * Channel Data can be divided into 0x0c-byte long entries  
-  * Starts at index = 0 for the first entry  
-  * This column tells which entry in Channel Data to start associating with the bone ID in the same table row  
-  * This value is equal to the sum of values in column 4 for all rows before the current row  
-* Column 4 *(blue)*: **Number of Channel Data entries**  
-  * Tells how many entries in Channel Data are associated with the bone ID in the same Table row  
-  * Common values: `01`, `03`, `04`, `05`, `06`, `09`
+**Looping.** `loop_flag` is nonzero for looping animations. These include the idle `ready` animations, `move` and `wait` animations, FE10's `twait` animations, and possibly others. A looping animation restarts at `start_frame` when it reaches `end_frame`; event codes 3 and 4 mark the loop's start and end ([§6.3](#63-footer-slot-0-event-track)).
 
 ---
 
-### 2c. Channel Data
+## 3. Bone Table
 
-This section provides **information about transformation channels** and **links Bone Table Data to F-Curve Data**. Data in this section can be split into **entries that are 0x0c bytes** long. The index of the first entry is 0x00. 
+**Location:** `0x30` (`bone_table_offset`). **Size:** `bone_count × 16` bytes. One record per animated bone. The table ties bones of the skeleton to curves in the Curve Table.
 
-The number of entries is defined in the Bone Table. 
+| Offset | Type | Field | Notes |
+|:---:|------|-------|-------|
+| `+0x00` | uint32 | bone_index | Index of the animated bone in the skeleton. Records are in **strictly ascending** bone_index order; a file with rows out of order may behave unexpectedly. |
+| `+0x04` | uint32 | channel_mask | Which transform terms the bone's curves cover: `0x08` scale, `0x10` rotate, `0x20` translate. Add the values for several. Rotate-pivot curves add **no** bit (see below). |
+| `+0x08` | uint32 | first_curve | Index (in the Curve Table) of the bone's first curve. |
+| `+0x0C` | uint32 | curve_count | Number of consecutive curves belonging to the bone. Common values: 1, 3, 4, 5, 6, 9. |
 
-**\# Channel Data entries** = `{largest value in table column 3, usually in the last row}` + `{value in column 4 of the same row}`
+**Consistency rules (confirmed on every shipped file).** `bone_count` equals the number of records; the first record's `first_curve` is 0; each record's `first_curve` equals the previous record's `first_curve + curve_count`; the last record's end equals the curve count of [§2](#2-header). The first animated record usually names the hip (bone 1, just below the root locator); some files start at bone 0.
 
-#### Channel Data Entry Composition
+**channel_mask bits** use the same positions as the term flags of a skeleton bone ([Skeleton note §4](../skeleton/tellius-skeleton-file-format.md)): bit 3 = scale, bit 4 = rotate, bit 5 = translate. A term is applied if the animation supplies it *or* the bone's own flags have it (`channel_flags = channel_mask | bone.flags`). The mask matches the channels of the bone's own curves, with one exception: the **rotate-pivot** curves (channels 12–14) appear under a mask with no corresponding bit. Groups with `channel_mask = 0` exist (109 in the FE10 and 159 in the FE9 `ymu` files); every one of them carries a rotate-pivot curve. **Confirmed.**
 
-<p align="center" style="font-size: 14px;">
-  <img src="../../images/animation/ga-hex-channel-data-entry-composition.png" alt="Image 3: Channel Data bookmarks from fe10 fighter3_n atk_2.ga 
-  Pink: Channel Data Entry 0x00 is 0x0c bytes long" width = 600>
-  <br>
-  <em>Image 3: Channel Data bookmarks from fe10 fighter3_n atk_2.ga 
-  <br> 
-  Pink: Channel Data Entry 0x00 is 0x0c bytes long</em>
-</p>
+**Bones that are not listed** keep their seed matrix ([§7](#7-how-an-animation-drives-the-skeleton)).
 
-* Byte 0x00: `00`  
-* Byte 0x01 *(orange)*: **Transform Channel Type**
-  * Scale (X, Y, Z): `00`, `01`, `02`  
-  * Rotation (X, Y, Z): `03`, `04`, `05`  
-  * Location (X, Y, Z): `06`, `07`, `08`  
-  * **Ordered by ascending Transform Channel Type** value within a set of entries associated with the *same bone ID* 
-* Byte 0x02 *(yellow)*: **Precision Scale Factor**  
-  * Scale factor used to **convert F-curve transformation value** into a float with minimal precision loss.   
-  * Observations:  
-    * This byte for weapons hidden the entirety of an animation is usually `0x0f`  
-    * This byte for weapons hidden for part of an animation is usually `0x0e`  
-* Byte 0x03: `00`  
-* Bytes 0x04 - 0x05 *(green)*: hex value of the **last frame** for a transformation   
-  * Most entries will have the same value as value File Info byte 0x1b, which is the last frame of the entire animation  
-  * Some entries will have the same value as File byte 0x17, which is the first frame of the entire animation.   
-    * This is typical for unused weapons, which are hidden at the start of the animation and never changed after that.   
-* Bytes 0x06 - 0x07 *(blue)*: **number of key frames** in F-Curve  
-  * Defines the size of F-Curve Data associated with each Channel Data entry  
-  * There are 4 bytes per Keyframe in F-Curve Data  
-* Bytes 0x08 - 0x0b *(purple)*: **index of starting keyframe** in F-Curve Data  
-  * Index of the first entry is `0x00`
+**Invisibility.** Every bone is visible by default. A bone is hidden by an animated scale of 0 (see [§5](#5-keyframe-data)). In FE9 this is done with ordinary scale curves. In FE10 it is usually done by the visibility block in the Footer ([§6.4](#64-footer-slot-1-visibility-fe10)) and only sometimes with scale curves; FE10 bone records rarely have scale in their mask.
 
 ---
 
-### 2d. F-Curve Data
+## 4. Curve Table
 
-Consists of **pairs of (frame, transform value)**, which build an animation data curve. Time measured in frames is along the X axis and transform is along the Y axis to build an f-curve graph.
+**Location:** `curve_table_offset`. **Size:** `curve_count × 12` bytes. One record per curve; the curves of one bone are consecutive, in ascending channel order.
 
-**Transform values** are a signed 16-bit integer describing the **magnitude of the transformation**. They are effectively unitless and must be converted into values with meaningful units using the B2 Scale Factor values in Channel Data entries. 
+| Offset | Type | Field | Notes |
+|:---:|------|-------|-------|
+| `+0x00` | uint16 | channel | Which slot of the bone's value block the curve overwrites (table below). The high byte is always 0. |
+| `+0x02` | uint16 | fraction_bits_raw | The number of **fraction bits** is its high byte (`fraction_bits_raw >> 8`, 6 bits used); the low byte is 0. Values are decoded as `raw × 2^(−n)`, where n is the number of fraction bits. |
+| `+0x04` | uint16 | end_frame | The frame of the curve's last keyframe, in every real file. |
+| `+0x06` | uint16 | key_count | Number of keyframes. |
+| `+0x08` | uint32 | first_key | Index (in keyframes, 4 bytes each) of the curve's first keyframe within the Keyframe Data. The upper 16 bits are always 0. |
 
-**Each dataset in F-Curve Data varies in size according to # keyframes** (described in Channel Data). There are 4-byte entries for each keyframe. 
+**Channels.** The channel number is the *index of the slot it overwrites in the 43-float `value block` of the skeleton bone record* (offset `64 + 4 × channel` within the record). **Confirmed.**
 
-* Byte 0x00-0x01: **frame** (time)
-* Byte: 0x02-0x03: **transform value**
+| Channel | Skeleton offset | Meaning | Seen in files |
+|:---:|:---:|---------|---|
+| 0–2 | `+64` | scale X/Y/Z | yes |
+| 3–5 | `+76` | rotate X/Y/Z (degrees) | yes |
+| 6–8 | `+88` | translate X/Y/Z | yes |
+| 9–11 | `+100` | joint orient X/Y/Z | **never** (static value) |
+| 12–14 | `+112` | rotate pivot X/Y/Z | yes, rare |
+| 15+ | `+124` ... | other value-block slots | never |
 
->Note: the game reads bytes 0x00-0x01 as a 2-byte value representing frame. Functionally, the first byte is always `0x00` because there are no animations long enough to require values > `0xFF`. 
+Over all 7,460 `ymu` animations of both games the only channels that occur are 0–8 and 12–14.
+
+**Rotate-pivot curves.** About 3,000 pivot curves occur in the `ymu` files (FE10 688 curves in up to 210 files, FE9 2,391 in up to 365 files). **Every one has exactly one key**, i.e. a constant for the whole clip. The two bones studied in `lord` (`arml2`, `sword1`) and one in `dragon` (`polySurface19`: pivot X key 2.939 against a rest pivot of 1.974, the same constant in every animation of that model) all differ from the bone's rest pivot, and all have flags `0x180` (rotate pivot term, bit 7, set). Since the rotate pivot has no bit in `channel_mask`, it can only take effect through the bone's own flag, so these curves plausibly override the pivot the bone rotates about. Whether the engine applies them is **not yet confirmed**.
+
+**Fraction bits observations.** A weapon that is hidden for the whole animation usually has `0x0F` fraction bits; a weapon hidden for only part of the animation usually `0x0E`.
 
 ---
 
-### 2e. Footer Data
+## 5. Keyframe Data
 
-Contains other info about the animation file. Can be divided into parts: Footer Data 1, Footer Data 2, Footer Pointer(s). 
+**Location:** `keyframe_data_offset`, up to the Footer (or end of file). One run of keyframes per curve, **in Curve Table order**, with no sharing between curves.
 
-- **Footer Pointer(s)** is organized differently in FE9 and FE10. 
+| Offset | Type | Field | Notes |
+|:---:|------|-------|-------|
+| `+0x00` | uint16 | frame | Frame number. The game reads a 16-bit value; the high byte is always 0 in practice. |
+| `+0x02` | int16 | value | Signed 16-bit raw value; the real value is `value × 2^(−fraction bits)`. |
 
-- **Footer Data 1** exists in FE9 and FE10 animations where interaction with another unit could be expected. This includes attack, magic, critical, tackle, and move animations
+Frames ascend within a curve. A curve's `end_frame` equals the frame of its last key.
 
-- **Footer Data 2** only exists in some FE10 animations to control invisibility.
+**Values are absolute.** A keyframe value *replaces* the skeleton's stored value for that slot; it is not a delta. The slots decode as: scale unitless, rotate in **degrees** (Euler, XYZ order), translate in model units. **Confirmed** (decompilation, and animated translate keys sitting next to the bone's rest value: for example `joint8` of `lord2` has a translate Y key of 10.076 against a rest value of 10.077). Consequences:
+- A **scale curve of 0 hides the bone** regardless of its rest scale; a **scale curve of 1 shows it**. A weapon that is hidden for the whole animation typically has one key at the start frame with value 0.
+- **Translate** values are expressed in the parent's frame (the same frame as the skeleton's `translate`).
+- Slots a file does not animate keep the skeleton's stored **seed pose** value.
 
-#### FE9 Footer Data
+**Interpolation is linear** between keys, and the first and last values are held before the first and after the last key. **Confirmed** for FE9 (decompilation of the keyframe evaluator); FE10 untested.
 
-<p align="center" style="font-size: 14px;">
-  <img src="../../images/animation/ga-footer-composition-fe9.png" alt="alt_text" width = 600>
-  <br>
-  <em>
-  Image 4: Footer Data bookmarks from fe9 knight atk1_bw.ga<br>
-  Red: Footer Pointer 1 [0x1bc8 - 0x1bcb]<br>
-  Light Grey: Footer Data 1 [0x1bf0 - 0x1c27]<br>
-  Other Bookmarks: See more in <a href="#footer-data-1">Footer Data 1</a>
-  </em>
-</p>
+**Moving an animation to another skeleton.** Keys are absolute values tied to bone indices. An animation can be moved to a skeleton with other proportions by matching bones by name, shifting translate (and rotate-pivot) keys by the difference between the two skeletons' rest values, and copying rotation and scale keys as they are (this assumes matching bone orientations). **Strong evidence.**
 
+---
 
-FE9 has either no Footer Data or Footer Data 1 + Footer Pointer(s)
+## 6. Footer
 
-* If the file’s bytes 0x00 - 0x03 has value `0x00`, there is **no Footer Data**. The file ends with F-Curve Data.   
-* If the file’s bytes 0x00 - 0x03 has any **non-zero value**, there is **one Footer Pointer and Footer Data 1**  
-  * The **header pointer** in bytes 0x00 - 0x03 **points directly to Footer Pointer(s)**.   
-  * For FE9, Footer Pointer(s) contains a single 4-byte pointer that I call **Footer Pointer 1**. It is followed by 36 or 0x24 bytes of `0x00`
+The Footer is optional: `footer_offset` (header word 0) is 0 when there is none, and the file then ends with the Keyframe Data. It holds data blocks called **footer slots**, reached through the **Footer Pointer(s)**. All pointers in it are absolute file offsets, so moving the Footer, or changing the size of the sections before it, requires rewriting them.
 
-    > These 0x24 bytes are not always `0x00` in animations outside the `ymu/`. For example, effect animations in `yme/` often have additional pointers in this section.
+**Slots.** A footer slot is a block of data of one kind. Slot numbers identify the kind:
 
-  * **Footer Pointer 1** points to the start of Footer Data 1  
-  * **Footer Data 1** lasts until the end of the file
+| Slot | Content | Games |
+|:---:|---------|---|
+| 0 | **Event track**: timed event codes (damage, swing, loop markers, sound, effects) | FE9, FE10 |
+| 1 | **Visibility**: timed show/hide of bones | FE10 only |
+| 2–8 | not decoded; appear on effect and scenery animations | FE9 |
 
-#### FE10 Footer Data
+FE9 keeps a fixed table of nine slot pointers, so an unused slot is a zero entry. FE10 lists only the slots that are present, each tagged with a **Slot Identifier**, so slot 1 can be present without slot 0. Whether FE10 slot 1 corresponds to an FE9 slot is unknown.
 
-FE10 has 4 possible combinations. 
+Which animations have an event track: attacks, criticals, magic, tackles, and moves; never damage, dead, escape, ready or wait. In `ymu`, FE9 files have either no footer or a single slot 0; most FE10 files have both slots, some have one, some none. **Strong evidence.**
 
-1. No Footer Data  
-2. Footer Data 1 + Footer Pointer(s)  
-3. Footer Data 2 + Footer Pointer(s)  
-4. Footer Data 1 + Footer Data 2 + Footer Pointer(s)
+### 6.1 FE9 Footer
 
-**No Footer Data**
-* If the File bytes 0x00 - 0x03 has value 0x00, there is no Footer Data. The file ends with F-Curve Data. 
+`footer_offset` points directly at the Footer Pointer(s):
 
-**Number of Footer Data sub-section(s)**
-* If the File bytes 0x00 - 0x03 has any **non-zero value**, there is **Footer Data**  
-* If the **last 4 bytes** of the file has a value of `0x00`, there is **only one Footer Data section**. It can be either Footer Data 1 OR Footer Data 2.  
-* If the **last 4 bytes** of the file are any **non-zero value**, **both Footer Data 1 and Footer Data 2** are present. 
+| Offset | Size | Content |
+|:---:|:---:|---------|
+| `+0x00` | 36 | **Footer Pointer(s)**: nine uint32 slot pointers, slot 0 first; 0 = empty slot |
+| `+0x24` | 4 | pad word (0) |
+| `+0x28` | var | the slot blocks, back to back in file order, running to the end of the file |
 
-#### Identifying FE10 Footer Data sub-section(s)
+The first used block starts at `+0x28`. In `ymu` animations only slot 0 is used, so the 36 bytes after the pointer are zero ("Footer Pointer 1 followed by `0x24` zero bytes" in earlier notes). An all-zero pointer table is a valid empty Footer. In effect (`yme`) and scenery animations further slots are non-zero. **Confirmed.**
 
-<p align="center" style="font-size: 14px;">
-  <img src="../../images/animation/ga-footer-composition-fe10.png" alt="Image 5: FFE10 Footer Data bookmarks from fighter3_n’s atk_2.ga
-  Pink: Footer Pointers [0x5f00 - 0x5f17]
-  Other Bookmarks: See “Footer Data 2” below" width = 600>
-  <br>
-  <em>Image 5: FE10 Footer Data bookmarks from fighter3_n’s atk_2.ga<br>
-  Pink: Footer Pointers [0x5f00 - 0x5f17]<br>
-  Other Bookmarks: See <a href="#footer-data-2">Footer Data 2</a> below</em>
-</p>
+### 6.2 FE10 Footer
 
-**Identifying Footer Pointer 1 and 2**
-* The pointer in File bytes 0x00 - 0x03 points to 0x0c bytes before the end of the file.   
-  * The 4-byte pointer target has a value of either 0x00 or 0x05  
-  * This value can serve as an identifier for a Footer Data sub-section  (**Footer ID**)
-  * If the value is `0x05`, the next 4 bytes is a pointer to **Footer Data 1**  
-  * If the value is `0x00`, the next 4 bytes is a pointer to **Footer Data 2**  
-  
-**If only one one Footer Data sub-section present:** 
-* **Footer Pointer(s)** is 0x0c bytes long. It consists of the **Footer Identifier**, a 4-byte **Footer Pointer** (1 or 2), and 4 bytes of `0x00`  
-* The present Footer Data sub-section (1 or 2) starts at the value of the Footer Pointer (1 or 2) and ends at the Footer Identifier 
+FE10 puts the Footer Pointer(s) at the **end of the file**, after the slot blocks. `footer_offset` points to the last `0x0C` bytes of the file, i.e. the last Slot Identifier. Two layouts exist:
 
-**If both Footer Data sub-sections are present** (see *Image 5,* above):  
-* Footer Pointer(s) is 24 (0x18) bytes long  
-* Footer Pointer(s) contains **3 pointers** and **2 pointer-identifiers**  
-* The order of Footer Pointer data is: Footer Identifier 1, Footer Pointer 1, 4 bytes 00, Footer Identifier 2, Footer Pointer 2, Footer Pointer 3
-* The header pointer at File Info [0x00-0x03] still points to 0x0c bytes before the end of the file  
-  * The **pointer target** is the 4-byte **Footer Identifier 2** with a value of `0x00`  
-* **Footer Pointer 2** points to the **start of Footer Data 2**.   
-  * In *Image 5*, Footer Pointer 2 has a value `0x5ecc`  
-* **Footer Pointer 3** points to **Footer Identifier 1** (which has a value of `0x05`)  
-  * The target of Footer Pointer 3 is typically 24 (or 0x18) bytes before the end of the file  
-  * In *Image 5*, Footer Pointer 3 has a value `0x5f00`  
-* The 4 bytes after Footer Identifier 1 is **Footer Pointer 1**. It points to the **start of Footer Data 1**  
-  * In *Image 5*, Footer Pointer 1 has a value `0x5e68`
+| Case | Footer Pointer(s) size | Layout |
+|------|:---:|--------|
+| One slot present | `0x0C` | `Slot Identifier`, `Footer Slot Pointer`, 4 zero bytes |
+| Both slots present | `0x18` | `Slot Identifier 0`, `Footer Slot 0`, 4 zero bytes, `Slot Identifier 1`, `Footer Slot 1`, `Slot Identifier Pointer` |
 
-#### Footer Data 1
+- A **Footer Slot Pointer** holds the file offset of its slot block. **Slot Identifier** words tag the slot that follows: `0x05` for slot 0 (event track), `0x00` for slot 1 (visibility). **Slot Identifier 0** and **Slot Identifier 1** are the identifiers of **Slot 0** and **Slot 1** in the two-slot layout.
+- In the two-slot layout `footer_offset` points to **Slot Identifier 1**, and the **Slot Identifier Pointer** (the last word of the file) points to **Slot Identifier 0**, normally `0x18` bytes before the end of the file.
+- **How to tell the cases apart:** if the `footer_offset` is non-zero and the last 4 bytes of the file are 0, only one slot is present. Its identifier value says which one (`0x05` = slot 0, `0x00` = slot 1). If the `footer_offset` and the last 4 bytes of the file are non-zero, both are present.
+- **Block extents.** One slot: the block runs from its **Footer Slot Pointer** to the **Footer Pointer(s)**. Two slots: slot 0 runs from `Footer Slot 0` to `Footer Slot 1`, and slot 1 from `Footer Slot 1` to the start of the Footer Pointer(s) (Slot Identifier 0).
 
-<p align="center" style="font-size: 14px;">
-  <img src="../../images/animation/ga-footer-composition-fe9.png" alt="Footer Data bookmarks from fe9 knight atk1_bw.ga
-  Same as Image 4 above." width = 600>
-  <br>
-  <em>
-  Image 4: Footer Data bookmarks from fe9 knight atk1_bw.ga<br>
-  Same as Image 4 above.
-  </em>
-</p>
+**Confirmed** on FE10 `ymu` animations (fighter3_n `atk_2.ga` for the two-slot case).
 
-**Footer Data 1** appears to identify important timing windows within an animation. This includes **attack, damage, and effect timing**.
+### 6.3 Footer Slot 0: Event Track
 
-**Footer Data Composition:**
-* Byte 0x00: `0x00`  
-* Byte 0x01 *(orange)*: **# entries** in Footer Data 1  
-* Bytes 0x02 - 0x07: `0x00`  
-* Bytes 0x08 - [variable end byte]  *(yellow)*: List of each Footer Data 1 entry’s **relative start index**.  
-  * Each list item is 2-bytes, with the first byte being 00  
-  * The second byte is the index of an entry’s starting byte.   
-    * Index 0x00 is the very first `0x00` byte of the Footer Data 1.   
-    * Index 0x01 is the # entries in Footer Data 1  
-  * Size of the list is twice the number of entries (defined by Footer Data 1: Byte 0x01)  
-* Bytes [variable start-end bytes]: **Entries**  
-  * Starts after the list of start indexes  
-  * Entries can **vary in size**   
-  * First entry (Entry 0x00) in *Image 5* bookmarked in  (*green) .* 
+The event track lists frames at which the animation emits **event codes**. As the animation plays, the engine collects the codes of every frame it passes (at most four per update) and hands them to the battle or map code. **Confirmed.**
 
-Footer Data 1 Entry Composition: 
-  * Byte 0x00: `0x00`  
-  * Byte 0x01  *(blue)*: **frame**  
-    * The frames used must be within the animation playback range of [start - end frame]. These values are defined at File Info bytes 0x17 and 0x1b  
-  * The exact function of the remaining data is unknown.   
-  * FE10 entries may have 2 extra bytes of 00 at the end of each entry compared to FE9
-  * 
->At least one entry handles damage display. The start/end frames are limited by the frame assigned for the damage display.   
->  * The first animation frame (File Info bytes 0x14-0x17) must be smaller than the damage display frame.   
->  * The last animation frame (File Info bytes 0x18-0x1b) must be larger than the damage display frame.   
->  * There may be other limiting factors.
- 
+| Offset | Type | Field |
+|:---:|------|-------|
+| `+0x00` | uint16 | key_count |
+| `+0x02` | uint16 | pad (0) |
+| `+0x04` | uint32 | runtime pointer word (0 on disc; the loader stores `block + 8` here) |
+| `+0x08` | uint16[key_count] | key offsets, from the start of the block |
+| then | keys | `frame` uint16, `code_count` uint16, `codes` uint16 × code_count |
 
-#### Footer Data 2
-<p align="center" style="font-size: 14px;">
-  <img src="../../images/animation/ga-footer-composition-fe10.png" alt="Image 5: FFE10 Footer Data bookmarks from fighter3_n’s atk_2.ga
- Same as Image 5 above.
-  Pink: Footer Pointers [0x5f00 - 0x5f17]
-  Light Grey: Footer Data 1 [0x5e68 - 0x5ecb]
-  Dark Grey: Footer Data 2 [0x5ecc - 0x5eff]
-  Other Bookmarks: See below below" width = 600>
-  <br>
-  <em>Image 5: FE10 Footer Data bookmarks from fighter3_n’s atk_2.ga<br>
-  Same as Image 5 above.<br>
-  Pink: Footer Pointers [0x5f00 - 0x5f17]<br>
-  Light Grey: Footer Data 1 [0x5e68 - 0x5ecb]<br>
-  Dark Grey: Footer Data 2 [0x5ecc - 0x5eff]<br>
-  Other Bookmarks: See below<br>
-  </em>
-</p>
+The block is padded to 4 bytes. FE9 files carry exactly this layout; FE10 event keys have been observed to end with two extra zero bytes (not yet reconciled).
 
+**Event codes.**
 
-**Footer Data 2** is only present in some FE10 animations. It is **responsible for invisibility** (scale=0). This is used to hide bones and associated mesh for all or part of the animation.
+| Code | Meaning | Level |
+|:---:|---------|---|
+| 0 | the blow lands (damage, HP gauge) | reported (engine + files) |
+| 1 | the swing; moves the round on after a miss | reported (engine + files) |
+| 2 | releases a thrown weapon | reported (engine + files) |
+| 3 / 4 | loop start / loop end | reported |
+| 0x14–0x1B | weapon trails (0x19 ends the trail) | reported, strong evidence |
+| 0x1C / 0x1D | set / clear a battle flag | reported |
+| 0x28 / 0x29 | spawn camera and light effects | reported |
+| 50 | footsteps and dust | reported, strong evidence |
+| 1000 and up | sound effects | reported, strong evidence |
 
-**Footer Data 2 Composition**
-* Overall layout is the same as Footer Data 1.   
-  * **\# entries**  
-    * Footer Data 1: *red*  
-    * Footer Data 2: * dark green .*   
-  * 0x06 bytes `0x00` padding  
-  * **Relative address/start index of each entry:**   
-    * Footer Data 1: *orange*   
-    * Footer Data 2: *light blue*  
-  * **Entry Data:**  
-    * Footer Data 1, Entry 0x00:  *yellow .*  
-    * Footer Data 1, Entry 0x01:  *light green .*  
-    * Footer Data 2, Entry 0x00:  *dark blue .*  
-    * Footer Data 2, Entry 0x01:  *purple .*  
-* **Entry Data Composition:** 
-  * Bytes 0x00 - 0x01: **number of keyframes**  
-  * Bytes 0x02 - 0x03: **bone ID**
-  * 4 bytes per Keyframe   
-    * Bytes 0x04 - 0x05: **frame**  
-    * Bytes 0x06 - 0x07: `00 00` or `00 01`  
-      * `00` for invisible, `01` for visible  
-  * Padding `00`s so the entry size is divisible by 4
+Melee attacks and criticals carry codes 0 and 1, throws carry 2. An attack without them leaves the combat round waiting; with them, retargeted and re-timed attacks play through in game. Another source reads code 1 as the hit frame; the table follows the later and more detailed observations. At least one event handles the damage display, and its frame has to lie inside the playback range ([§2](#2-header)).
+
+### 6.4 Footer Slot 1: Visibility (FE10)
+
+Slot 1 makes bones, usually unequipped weapons, invisible (scale 0) for all or part of an animation. It is present in some FE10 animations. It uses the same container as the event track:
+
+| Offset | Type | Field |
+|:---:|------|-------|
+| `+0x00` | uint16 | entry_count |
+| `+0x02` | 6 bytes | pad / runtime pointer word (0) |
+| `+0x08` | uint16[entry_count] | entry offsets, from the start of the block |
+| then | entries | see below |
+
+Each entry: `key_count` uint16, `bone_index` uint16, then `key_count` keys of `frame` uint16 and `visible` uint16 (`0` = invisible, `1` = visible), padded to a multiple of 4 bytes. **Strong evidence.**
+
+### 6.5 Other Footer Slots
+
+FE9 effect (`yme`) and scenery (`zbg`, `zmap`) animations have non-zero data in slots 2–8. These blocks are not decoded. They can be copied as raw bytes when a file is rebuilt, with their pointers rebased. **Hypothesis** for any further interpretation.
+
+---
+
+## 7. How an Animation Drives the Skeleton
+
+### 7.1 Evaluation
+
+For a requested frame, the engine does the following for every bone listed in the Bone Table:
+1. Each curve of the bone is evaluated (linear interpolation, ends held) and the value is written into the matching **value block** slot of the bone, replacing the skeleton's value ([§5](#5-keyframe-data)).
+2. The bone's local matrix is rebuilt from the value block, using the terms enabled by `channel_flags = channel_mask | bone.flags`: translate, rotation about the rotate pivot (joint orient, rotate, rotate axis), scale about the scale pivot. See the Skeleton note ([§6.1](../skeleton/tellius-skeleton-file-format.md)).
+3. Bones not listed keep their **seed matrix**.
+4. World matrices are chained from the root down (first child, then next sibling), and a vertex is drawn through `world[bone] × skin[bone]`.
+
+Consequently an animation key is an absolute value in the skeleton's own terms: it only means the same thing on another skeleton if that skeleton's rest values, joint orients and bind pose agree ([§5](#5-keyframe-data), moving an animation).
+
+### 7.2 Engine routines
+
+Names from decompilation; addresses from the GameCube `main.dol`.
+
+| Name | Role |
+|------|------|
+| `gactor_update_animation_timer` (`0x80060060`) | Advances playback; reads header words 3–6 (format flags, loop flag, start frame, end frame). |
+| `fn_8006353C` / `interpolate_animation_frame_value` (`0x80063614`) | Evaluates one curve at a frame: linear interpolation between int16 keys, ends held. |
+| `fn_80061930` | Main pose evaluation; forms `channel_flags = channel_mask \| bone.flags`. |
+| `fn_80062848` / `build_bone_local_matrix` | Builds a bone's local matrix from the evaluated values. |
+| `find_animation_frames_in_time_range` (`0x800651FC`) | Collects the event codes of the frames passed since the last update (up to four). |
+| `fixup_animation_pointer_offsets` (`0x80063A14`) | Loader relocation: header words 0, 1, 8, 9, 10, 11 and the nine slot pointers of the FE9 Footer (for the first eight slots it also stores `block + 8` in the block's second word). |
+
+### 7.3 Where animations are used
+
+- **Map models** (`ymu`): one animation file per action and weapon (`wait`, `move`, `atk1`, ...); an action the unit record does not enable plays `tackle` instead. Map weapons are part of the body, one bone each; each animation shows the weapon in use by scaling its bone to 1 and the others to 0.
+- **Battle models** (`zu`): each battle model's `.dbx` names the animation for every situation and weapon (idle, ready, two attacks, two crits, dodge, damage, death, run, sidestep, throw, crit throw, follow-ups). Situations may share a file: the Fighter's 29 files hold 14 distinct motions. An archer's bow bone is animated with scale 0 whenever the bow should not be seen.
+- `_root_` follows the hips, so a step taken in one battle animation carries into the next.
+
+---
+
+## 8. Terminology Notes
+
+Other documents, tools and earlier versions of these notes use different words for some of the same things. This reference uses the left-hand term. (The full catalogue is kept in `terminology.md`.)
+
+| This reference | Also seen as |
+|---|---|
+| Header | File Info |
+| start_frame | start frame; "frame a loop restarts at"; loop restart frame |
+| format_flags (word 3) | byte `0x0F`; "format" |
+| Bone Table, record `(bone_index, channel_mask, first_curve, curve_count)` | bone table; bone-group table; "Starting entry index in Channel Data" |
+| Curve Table | Channel Data; curve data; `curve_info` |
+| channel | transform channel type |
+| fraction bits | B2; precision scale factor; scale shift; `curve_type` |
+| Keyframe Data | F-curve data |
+| Footer | Footer Data section |
+| Footer Slot 0 / Footer Slot 1 | Footer Pointer 1 / Footer Pointer 2 |
+| Slot 0: event track | Footer Data 1 |
+| Slot 1: visibility | Footer Data 2 |
+| Footer Pointer(s) | footer pointer block |
+| Slot Identifier 0 / 1 | Footer Identifier 1 / 2 |
+| Slot Identifier Pointer | Footer Pointer 3 |
+| event code | footer entry data |
+
+---
+
+## 9. Remaining Unknowns
+
+- **Rotate-pivot curves:** whether the engine applies them (all observed ones are single constants on bones with flag bit 7 set), and the exact effect.
+- **Rotate-pivot flag gating:** whether bit 7 of the bone's flags is the only gate, and whether every bone with a pivot curve has it.
+- **FE10 interpolation:** linear interpolation is confirmed for FE9 only.
+- **FE10 event-track entries:** the two extra trailing bytes, and the meaning of the remaining event data beyond the codes listed.
+- **FE10 slot 1 vs FE9 slots:** whether visibility corresponds to one of FE9's undecoded slots 1–8.
+- **Footer slots 2–8** on effect and scenery animations (undecoded).
+- **start_frame** values in FE10 `motion*2_#.ga`, and the full set of animations that loop.
+- **Event codes** in the 0x14–0x1B range and the exact roles of codes above 1000.
+- **Joint-orient channels (9–11):** never seen; whether any engine path would honour them is unknown.
+- **FE10 testing:** rotation, translate and scale behavior comes mainly from FE9.
