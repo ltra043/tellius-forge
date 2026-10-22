@@ -2,7 +2,7 @@ bl_info = {
     "name": "Tellius Forge",
     "description": "Fire Emblem 9 & 10 Asset Handler",
     "author": "Jade (ltra043), based on work by Zheneq and ATMachine",
-    "version": (0, 28, 1),
+    "version": (0, 29, 2),
     "blender": (4, 2, 0),
     "location": "File > Import, File > Export",
     "category": "Import-Export",
@@ -297,8 +297,14 @@ def _ga_decode(b1, s16_val, b2=15):
 
     B2 is the GQR scale exponent: float = s16 / (1 << B2).
     Rotation channels (B1 3-5) store degrees in the file; converted to radians for Blender.
-    Translation channels (B1 6-8) are negated per game convention.
+    Translation channels (B1 6-8) are NOT negated (the old docstring said they
+    were; the code never did, and KLG's research agrees the value is used as-is).
     Scale channels (B1 0-2) are direct.
+
+    NOTE (v0.29.0): every channel value is ABSOLUTE - it replaces the skeleton's
+    stored value for that slot (scale rest=1, rotate rest=0, translate rest=p88).
+    Translate values are therefore converted to Blender's delta-style 'location'
+    by ga_translate_to_blender() below; this function only does the numeric decode.
     """
     scale = float(1 << b2)
     if 0x03 <= b1 <= 0x05:
@@ -313,7 +319,7 @@ def _ga_encode(b1, blender_val, b2=15):
     """Convert a Blender float back to a raw signed int16.
 
     Inverse of _ga_decode. Rotation channels convert radians → degrees before encoding.
-    Translation channels are negated. Scale channels are direct.
+    Translation and scale channels are encoded as-is (no negation).
     """
     scale = float(1 << b2)
     if 0x03 <= b1 <= 0x05:      # Rotation
@@ -374,6 +380,141 @@ def _unwrap_euler(values_rad):
         diff -= TWO_PI * math.floor((diff + math.pi) / TWO_PI)
         out.append(out[i - 1] + diff)
     return out
+
+
+# =============================================================================
+# UTILITY — .ga TRANSLATE CHANNEL  <->  BLENDER 'location'   (v0.29.0)
+# =============================================================================
+#
+# WHY THIS EXISTS
+#   .ga keys are ABSOLUTE: a translate key REPLACES the bone's stored translate
+#   slot (file offset +88, "p88"; zero on Class A bones, the local offset on
+#   Class B bones).  Blender's pose 'location' is a DELTA from the rest pose,
+#   measured along the bone's own rest axes.  Two corrections are needed:
+#
+#     1. subtract the rest value            d  = T_anim - p88
+#     2. change frame: the game applies translate in the PARENT's frame, Blender
+#        measures it in the bone's own rest frame, which differs by the bone's
+#        relative rest rotation 'rel' (parent_rest^-1 * bone_rest).
+#                                           l  = rel^T * d
+#
+#   The bone may also carry a static pose_location ('comp', set at skeleton
+#   import to compensate for the naive-vs-true rest positions).  An F-curve on
+#   'location' overwrites that static value, so it is added back:
+#
+#        l(frame) = rel^T * (T_anim(frame) - p88) + comp
+#
+#   Export applies the exact inverse:   T_anim = rel * (l - comp) + p88
+#
+#   When rel is the identity the three axes are independent and only the axes
+#   that have keys are touched.  Otherwise the three axes mix, so all three are
+#   evaluated on the union of key frames (exact, because the engine - and the
+#   importer since v0.29.0 - interpolates linearly).
+
+def _ga_lin_eval(keys, frame):
+    """Linear interpolation over sorted [(frame, value)], holding the end values."""
+    if frame <= keys[0][0]:
+        return keys[0][1]
+    if frame >= keys[-1][0]:
+        return keys[-1][1]
+    lo, hi = 0, len(keys) - 1
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if keys[mid][0] <= frame:
+            lo = mid
+        else:
+            hi = mid
+    f0, v0 = keys[lo]
+    f1, v1 = keys[hi]
+    if f1 == f0:
+        return v1
+    return v0 + (v1 - v0) * ((frame - f0) / (f1 - f0))
+
+
+def _ga_is_identity3(m, tol=1e-4):
+    return all(abs(m[r][c] - (1.0 if r == c else 0.0)) < tol
+               for r in range(3) for c in range(3))
+
+
+def ga_translate_to_blender(curves, rest, rel, comp):
+    """File (absolute) translate keys -> Blender location keys.
+
+    curves : {axis(0-2): [(frame, file_value), ...]}  sorted by frame
+    rest   : (x, y, z)  the bone's stored translate slot (p88)
+    rel    : 3x3 nested list, rotation of parent_rest^-1 * bone_rest
+    comp   : (x, y, z)  the bone's static pose_location
+    returns {axis: [(frame, blender_value), ...]}
+    """
+    if not curves:
+        return {}
+    if _ga_is_identity3(rel):
+        return {a: [(f, v - rest[a] + comp[a]) for f, v in keys]
+                for a, keys in curves.items()}
+    frames = sorted({f for keys in curves.values() for f, _ in keys})
+    out = {0: [], 1: [], 2: []}
+    for f in frames:
+        d = [(_ga_lin_eval(curves[a], f) if a in curves else rest[a]) - rest[a]
+             for a in range(3)]
+        for c in range(3):
+            out[c].append((f, sum(rel[r][c] * d[r] for r in range(3)) + comp[c]))
+    return out
+
+
+def blender_translate_to_ga(curves, rest, rel, comp, tol=1e-5):
+    """Exact inverse of ga_translate_to_blender (Blender location -> file values)."""
+    if not curves:
+        return {}
+    if _ga_is_identity3(rel):
+        return {a: [(f, v - comp[a] + rest[a]) for f, v in keys]
+                for a, keys in curves.items()}
+    frames = sorted({f for keys in curves.values() for f, _ in keys})
+    out = {0: [], 1: [], 2: []}
+    for f in frames:
+        dl = [(_ga_lin_eval(curves[a], f) if a in curves else comp[a]) - comp[a]
+              for a in range(3)]
+        for r in range(3):
+            out[r].append((f, sum(rel[r][c] * dl[c] for c in range(3)) + rest[r]))
+    # Axes that never leave the rest value are equivalent to "no curve".
+    return {a: v for a, v in out.items()
+            if max(abs(val - rest[a]) for _, val in v) > tol}
+
+
+def _ga_bone_translate_frame(arm_obj, bone_name):
+    """Return (rest, rel, comp) for a bone - see the block comment above."""
+    bone = arm_obj.data.bones[bone_name]
+    rest = (0.0, 0.0, 0.0)
+    hexs = str(bone.get('fe_raw_rec_hex', ''))
+    if len(hexs) == BONE_STRIDE * 2:
+        rest = struct.unpack('>fff', bytes.fromhex(hexs)[88:100])
+    m = bone.matrix_local.to_3x3()
+    if bone.parent is not None:
+        m = bone.parent.matrix_local.to_3x3().inverted() @ m
+    rel = [[m[r][c] for c in range(3)] for r in range(3)]
+    comp = (0.0, 0.0, 0.0)
+    pb = arm_obj.pose.bones.get(bone_name)
+    if pb is not None and 'fe_pose_location' in pb:
+        comp = tuple(float(v) for v in pb['fe_pose_location'])
+    return rest, rel, comp
+
+
+def _ga_export_translate_series(arm_obj, bone_name, fcurve_lookup):
+    """Blender location F-curves of a bone -> {axis: [(frame, file_value)]}."""
+    dp = f'pose.bones["{bone_name}"].location'
+    curves = {}
+    for axis in range(3):
+        fc = fcurve_lookup.get((dp, axis))
+        if fc is not None and len(fc.keyframe_points):
+            curves[axis] = sorted((kp.co[0], kp.co[1]) for kp in fc.keyframe_points)
+    if not curves:
+        return {}
+    rest, rel, comp = _ga_bone_translate_frame(arm_obj, bone_name)
+    return blender_translate_to_ga(curves, rest, rel, comp)
+
+
+# Interpolation used for imported keys.  KLG's decompilation of the FE9 engine
+# shows int16 keys are interpolated LINEARLY between keys (ends hold).  Change
+# to 'BEZIER' only if FE10 turns out to differ.
+GA_INTERPOLATION = 'LINEAR'
 
 
 # =============================================================================
@@ -1871,25 +2012,43 @@ def import_ga_to_blender(context, ga_data, armature_obj, action_name):
 
             _bone_channels.append((channel_type, arr_idx, b2, frames_and_vals, prop_name, data_path))
 
+        # ── Pass 1b (v0.29.0): file translate keys are ABSOLUTE ────────────
+        # Convert them to Blender's delta-style 'location' (subtract the rest
+        # translate p88, rotate into the bone's own frame, add back the static
+        # pose_location).  See ga_translate_to_blender() for the derivation.
+        _trans_in  = {}
+        _trans_b2  = {}
+        for (ct, ai, cb2, fv, pn, dp) in _bone_channels:
+            if ct in (6, 7, 8):
+                _trans_in[ai] = fv
+                _trans_b2[ai] = cb2
+        if _trans_in:
+            _rest, _rel, _comp = _ga_bone_translate_frame(arm, bone_name)
+            _conv = ga_translate_to_blender(_trans_in, _rest, _rel, _comp)
+            _b2_default = next(iter(_trans_b2.values()))
+            _bone_channels = [e for e in _bone_channels if e[0] not in (6, 7, 8)]
+            for ai in sorted(_conv):
+                _bone_channels.append((
+                    6 + ai, ai, _trans_b2.get(ai, _b2_default), _conv[ai],
+                    'location', f'pose.bones["{bone_name}"].location'))
+
         # ── Pass 2: create FCurves from decoded data ───────────────────────
         for channel_type, arr_idx, b2, frames_and_vals, prop_name, data_path in _bone_channels:
             fcurve = fcurves.find(data_path, index=arr_idx)
             if fcurve is None:
                 fcurve = fcurves.new(data_path, index=arr_idx)
 
-            use_bezier = (b2 != 0x0F)
-
             actual_kf = len(frames_and_vals)
             fcurve.keyframe_points.add(actual_kf)
             for ki, (frame_num, blender_val) in enumerate(frames_and_vals):
                 kp           = fcurve.keyframe_points[ki]
                 kp.co        = (frame_num, blender_val)
-                if use_bezier:
-                    kp.interpolation      = 'BEZIER'
-                    kp.handle_left_type   = 'AUTO_CLAMPED'
-                    kp.handle_right_type  = 'AUTO_CLAMPED'
-                else:
-                    kp.interpolation = 'LINEAR'
+                # v0.29.0: linear between keys, like the engine (was BEZIER
+                # AUTO_CLAMPED for every curve whose B2 != 15).
+                kp.interpolation = GA_INTERPOLATION
+                if GA_INTERPOLATION == 'BEZIER':
+                    kp.handle_left_type  = 'AUTO_CLAMPED'
+                    kp.handle_right_type = 'AUTO_CLAMPED'
 
             fcurve.update()
             curves_created += 1
@@ -2114,17 +2273,26 @@ def export_ga_from_blender(armature_obj, action, filepath):
 
     for bone_id in sorted(bone_id_to_name.keys()):
         bone_name = bone_id_to_name[bone_id]
+        # v0.29.0: translate keys go through the exact inverse of the import
+        # conversion (Blender delta location -> absolute file value).
+        trans_series = _ga_export_translate_series(armature_obj, bone_name, fcurve_lookup)
         for channel_type in sorted(_GA_CHANNEL.keys()):
             prop_name, arr_idx, _ = _GA_CHANNEL[channel_type]
             data_path = f'pose.bones["{bone_name}"].{prop_name}'
-            fcurve    = fcurve_lookup.get((data_path, arr_idx))
-            if fcurve is None or not fcurve.keyframe_points:
-                continue
+            if 6 <= channel_type <= 8:
+                src_pairs = trans_series.get(arr_idx)
+                if not src_pairs:
+                    continue
+            else:
+                fcurve    = fcurve_lookup.get((data_path, arr_idx))
+                if fcurve is None or not fcurve.keyframe_points:
+                    continue
+                src_pairs = [(kp.co[0], kp.co[1]) for kp in fcurve.keyframe_points]
 
             b2_key = f"{bone_name}.{prop_name}[{arr_idx}]"
 
             # B2 is always computed from FCurve value ranges
-            encode_vals = [kp.co[1] for kp in fcurve.keyframe_points]
+            encode_vals = [v for _, v in src_pairs]
             if 3 <= channel_type <= 5:
                 encode_vals = [v * (180.0 / math.pi) for v in encode_vals]
             b2 = _compute_b2(encode_vals)
@@ -2134,9 +2302,8 @@ def export_ga_from_blender(armature_obj, action, filepath):
             # Euler wrapping is applied here at encode time, separate from the
             # B2 lookup above so that the two concerns do not interfere.
             kf_pairs = []
-            for kp in fcurve.keyframe_points:
-                fn  = int(round(kp.co[0]))
-                val = kp.co[1]
+            for fr, val in src_pairs:
+                fn  = int(round(fr))
                 kf_pairs.append((fn, _ga_encode(channel_type, val, b2)))
 
             if not kf_pairs:
@@ -2261,6 +2428,61 @@ def export_ga_from_blender(armature_obj, action, filepath):
     print(f"  {len(out)} bytes  |  {n_bones} bones  |  "
           f"{n_meta} channels  |  {n_fd} keyframes")
     return True
+
+
+# =============================================================================
+# .gs COMPOSITE (BLENDED-VERTEX) BUFFER — FIXED-POINT SCALE   (v0.29.2)
+# =============================================================================
+#
+# The composite buffer header is 16 bytes (big-endian):
+#   +0x00 uint32  offset (from buffer start) of the weight records (always 0x10)
+#   +0x04 uint32  offset (from buffer start) of the vertex data
+#   +0x08 uint16  weight-record count
+#   +0x0A uint16  vertex count
+#   +0x0C uint8   SHIFT  -> positions AND normals are int16 / (1 << SHIFT)
+#   +0x0D uint8   padding
+#   +0x0E uint16  count of records holding more than one vertex
+#
+# Before v0.29.2 the plugin assumed SHIFT == 8 (scale 256) for every model.
+# KLG's FE9 reader and article state the scale is stored here and that shipped
+# files use 5..10 fraction bits, so models whose shift differs from 8 were
+# imported at the wrong size (2^(8-shift) times too small when shift < 8).
+
+CB_DEFAULT_SHIFT = 8
+
+
+def _cb_shift(data, cb):
+    """Fraction-bit count of the composite buffer at file offset *cb*.
+
+    Falls back to CB_DEFAULT_SHIFT (the old hard-coded value) if the byte is
+    missing or outside 0..15 (an int16 cannot use more fraction bits than 15)."""
+    if cb + 0x0D > len(data):
+        return CB_DEFAULT_SHIFT
+    shift = data[cb + 0x0C]
+    return shift if 0 <= shift <= 15 else CB_DEFAULT_SHIFT
+
+
+def _cb_scale_report(data, comp_vertices, shift):
+    """Print a sanity check: composite-vertex bounds vs the header AABB (0x2C).
+
+    The header AABB is in model space. If the buffer was decoded at the right
+    scale the two extents should be about equal. Purely informational."""
+    pts = [v for v in comp_vertices if v != (0.0, 0.0, 0.0)]   # skip padding slots
+    if not pts or len(data) < 0x44:
+        return
+    hb = struct.unpack('>6f', data[0x2C:0x44])
+    h_ext = [hb[3 + i] - hb[i] for i in range(3)]
+    c_ext = [max(p[i] for p in pts) - min(p[i] for p in pts) for i in range(3)]
+    axis = max(range(3), key=lambda i: h_ext[i])
+    if h_ext[axis] < 1e-6 or c_ext[axis] < 1e-6:
+        return
+    ratio = c_ext[axis] / h_ext[axis]
+    print(f"  [CB] shift={shift} (scale {1 << shift}); header AABB extent {h_ext[axis]:.3f}, "
+          f"decoded extent {c_ext[axis]:.3f} (ratio {ratio:.2f}) on axis {'XYZ'[axis]}")
+    if not 0.8 <= ratio <= 1.25:
+        k = round(math.log2(ratio))
+        print(f"  [CB] WARNING: decoded size does not match the header AABB; "
+              f"a shift of {shift + k} would match it")
 
 
 # =============================================================================
@@ -2432,6 +2654,7 @@ def read_gs_file(filepath, bones=None):
 
     # ── Composite vertex buffer ────────────────────────────────────────────────
     comp_vertices = []; comp_normals = []; use_composite = False
+    cb_shift = CB_DEFAULT_SHIFT
     cb_base = 0  # Store CB base for gap record lookup
     
     # v24.6: Find CB via header pointer at 0x68
@@ -2447,7 +2670,8 @@ def read_gs_file(filepath, bones=None):
             # Vertex count = +0x0A (uint16)
             num_verts = struct.unpack('>H', data[cb_base+0xA:cb_base+0xC])[0]
             if num_verts > 0 and addr_verts > 0:
-                CS = 256
+                cb_shift = _cb_shift(data, cb_base)   # v0.29.2: read, don't assume 8
+                CS = 1 << cb_shift
                 vp = cb_base + addr_verts  # vertex data offset from CB header
                 for _ in range(num_verts):
                     x  = struct.unpack('>h', data[vp:vp+2])[0]    / CS
@@ -2461,14 +2685,15 @@ def read_gs_file(filepath, bones=None):
                     vp += 12
                 use_composite = True
                 print(f"  [CB] Loaded {num_verts} composite vertices from 0x{cb_base:X}")
+                _cb_scale_report(data, comp_vertices, cb_shift)
     
     # Fallback: check header[0x64] for composite buffer (older format)
     if not use_composite and addrs[9]:
         pos        = addrs[9]
         addr_verts = struct.unpack('>I', data[pos+4:pos+8])[0]
         num_verts  = struct.unpack('>H', data[pos+10:pos+12])[0]
-        CS = 256
-        # CS = 0x800
+        cb_shift   = _cb_shift(data, pos)
+        CS = 1 << cb_shift
         vp = addrs[9] + addr_verts
         for _ in range(num_verts):
             x  = struct.unpack('>h', data[vp:vp+2])[0]    / CS
@@ -2481,6 +2706,7 @@ def read_gs_file(filepath, bones=None):
             comp_normals.append((nx, ny, nz))
             vp += 12
         use_composite = True
+        _cb_scale_report(data, comp_vertices, cb_shift)
 
     reg_v = vertices; reg_n = normals
 
@@ -2701,7 +2927,7 @@ def read_gs_file(filepath, bones=None):
             cb_header = cb_base if cb_base else 0xB060
             vertex_offset = struct.unpack('>I', data[cb_header+4:cb_header+8])[0]
             vert_start = cb_header + vertex_offset
-            CS = 256
+            CS = 1 << cb_shift
             
             # Group vertices by bone and get X,Y ranges
             bone_vert_positions = defaultdict(list)
@@ -3086,6 +3312,7 @@ def read_gs_file(filepath, bones=None):
         'vertex_count': len(active_v), 'vertex_scale': vert_scale,
         'used_composite': use_composite,
         'composite_offset': addrs[9] if addrs[9] else 0,
+        'composite_shift':  cb_shift,
         'skin_weights': skin_weights,
         'uv_offset':    addrs[2],
         'uv_count':     nums[2],
@@ -3202,6 +3429,7 @@ def create_blender_mesh(name, mesh_data):
         'vertex_scale':     mesh_data.get('vertex_scale', 1024),
         'used_composite':   mesh_data.get('used_composite', False),
         'composite_offset': mesh_data.get('composite_offset', 0),
+        'composite_shift':  mesh_data.get('composite_shift', CB_DEFAULT_SHIFT),
         'uv_offset':        mesh_data.get('uv_offset', 0),
         'uv_count':         mesh_data.get('uv_count', 0),
         'uv_scale':         mesh_data.get('uv_scale', 1),
@@ -3636,8 +3864,9 @@ def export_gs_file(mesh_obj, filepath):
                        f"Adding/removing vertices is not supported in v11.")
 
     if used_composite:
-        CS = 256
-        # CS = 0x800
+        # v0.29.2: use the shift stored at import (meshes imported with an
+        # older version have no stored value and keep the old default of 8).
+        CS = 1 << int(gs.get('composite_shift', CB_DEFAULT_SHIFT))
         mesh.calc_normals()
         for i, vert in enumerate(mesh.vertices):
             co = vert.co
@@ -7783,28 +8012,47 @@ class FE_OT_ApplyFePoseToPose(bpy.types.Operator):
             return {'CANCELLED'}
 
         applied_count = 0
+        skipped_count = 0
         for pbone in selected_pose_bones:
             # Get fe_pose custom properties
             fe_pose_loc = pbone.get('fe_pose_location')
             fe_pose_rot = pbone.get('fe_pose_rotation')
 
             if fe_pose_loc is None and fe_pose_rot is None:
+                skipped_count += 1
                 continue
 
             # Set rotation mode to XYZ Euler
             pbone.rotation_mode = 'XYZ'
 
-            # Apply fe_pose_location to pose bone location
-            if fe_pose_loc is not None and any(abs(v) > 1e-6 for v in fe_pose_loc):
-                pbone.location = fe_pose_loc
+            # Both channels are written UNCONDITIONALLY, zeros included, so that
+            # this operator can also undo an offset it (or the import) applied
+            # earlier.  Skipping near-zero values left the pose bone stuck at
+            # whatever it currently was, which is the opposite of "return the
+            # bone to the base rest pose".
 
-            # Apply fe_pose_rotation to pose bone rotation
-            if fe_pose_rot is not None and any(abs(v) > 1e-6 for v in fe_pose_rot):
-                pbone.rotation_euler = Euler(fe_pose_rot, 'XYZ')
+            if fe_pose_loc is not None:
+                pbone.location = Vector((float(fe_pose_loc[0]),
+                                         float(fe_pose_loc[1]),
+                                         float(fe_pose_loc[2])))
+
+            if fe_pose_rot is not None:
+                # fe_pose_rotation is stored in DEGREES (read_skeleton_file
+                # emits math.degrees(...)), while PoseBone.rotation_euler is in
+                # RADIANS.  create_armature() converts on import; this operator
+                # used to skip the conversion and fed the degrees straight into
+                # a radians field, which rotated bones by ~57x too far.
+                pbone.rotation_euler = Euler((math.radians(float(fe_pose_rot[0])),
+                                               math.radians(float(fe_pose_rot[1])),
+                                               math.radians(float(fe_pose_rot[2]))),
+                                              'XYZ')
 
             applied_count += 1
 
-        self.report({'INFO'}, f"Applied fe_pose to {applied_count} pose bone(s)")
+        msg = f"Applied fe_pose to {applied_count} pose bone(s)"
+        if skipped_count:
+            msg += f"; {skipped_count} skipped (no fe_pose properties)"
+        self.report({'INFO'}, msg)
         return {'FINISHED'}
 
 
