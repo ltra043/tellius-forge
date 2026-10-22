@@ -2,7 +2,7 @@ bl_info = {
     "name": "Tellius Forge",
     "description": "Fire Emblem 9 & 10 Asset Handler",
     "author": "Jade (ltra043), based on work by Zheneq and ATMachine",
-    "version": (0, 30, 5),
+    "version": (0, 31, 7),
     "blender": (4, 2, 0),
     "location": "File > Import, File > Export",
     "category": "Import-Export",
@@ -460,7 +460,7 @@ def ga_translate_to_blender(curves, rest, rel, comp):
     return out
 
 
-def blender_translate_to_ga(curves, rest, rel, comp, tol=1e-5):
+def blender_translate_to_ga(curves, rest, rel, comp, tol=1e-3):
     """Exact inverse of ga_translate_to_blender (Blender location -> file values)."""
     if not curves:
         return {}
@@ -475,8 +475,398 @@ def blender_translate_to_ga(curves, rest, rel, comp, tol=1e-5):
         for r in range(3):
             out[r].append((f, sum(rel[r][c] * dl[c] for c in range(3)) + rest[r]))
     # Axes that never leave the rest value are equivalent to "no curve".
+    # v0.31.6: tolerance raised from 1e-5 to 1e-3 game units; the 3-axis mix through a rotated
+    # 'rel' leaves ~1e-5 noise on axes the file never keyed, which used to become extra curves.
     return {a: v for a, v in out.items()
             if max(abs(val - rest[a]) for _, val in v) > tol}
+
+
+# =============================================================================
+# UTILITY — .ga ROTATE CHANNEL  <->  BLENDER pose rotation   (v0.31.0)
+# =============================================================================
+#
+# WHY THIS EXISTS
+#   In a BIND-mode armature (v0.30.2+) the bones rest in the pose the mesh was
+#   bound in, and each pose bone's static rotation carries the difference to
+#   the engine's seed pose.  A .ga rotate key is an ABSOLUTE engine value, so
+#   writing it straight into rotation_euler (old behaviour) throws away that
+#   static rotation.  Bones below joint-orient chains (fighter2, bishop2, ...)
+#   then end up turned by 100-130 degrees.
+#
+#   The engine draws a bone with rotation  E_b . Sr_b  (E = chained
+#   JO . Rot . RO, Sr = rotation part of the skin matrix).  Blender draws
+#   pose . rest^-1.  Solving for the pose rotation of bone b gives
+#
+#       P = M^-1 . Srp^-1 . JO . Rot . RO . Srb . M
+#
+#   M   = the bone's rest rotation (Bone.matrix_local)   Srp / Srb = skin rotation of parent / bone
+#   JO  = joint orient (+100)   RO = rotate axis (+160)   Rot = the .ga rotate value (degrees, XYZ Euler)
+#   (a root bone has Srp = identity).  The result does not depend on what the parent is doing, and at
+#   the rest values it reproduces exactly the static pose rotation written at import.
+#
+#   P is NOT linear in the Euler angles, so it is evaluated only at the key
+#   frames the file already has (union of the bone's three rotate curves; a
+#   missing axis is evaluated at the bone's rest rotation).  Export applies the
+#   exact inverse at the same frames, so import -> export returns the original
+#   keys.  Between keys Blender interpolates the converted angles linearly
+#   (error shown by rot_sim.py: 0 - 2.5 degrees preview-only; the .ga is exact).
+
+def mat3_transpose(m):
+    return tuple(tuple(m[j][i] for j in range(3)) for i in range(3))
+
+
+def mat3_orthonormal(m):
+    """Nearest rotation (Gram-Schmidt on the columns); strips scale from a skin matrix."""
+    cols = [[m[r][c] for r in range(3)] for c in range(3)]
+    def unit(v):
+        l = math.sqrt(sum(x * x for x in v)) or 1.0
+        return [x / l for x in v]
+    a = unit(cols[0])
+    d = sum(x * y for x, y in zip(a, cols[1]))
+    b = unit([y - d * x for x, y in zip(a, cols[1])])
+    c = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+    cs = (a, b, c)
+    return tuple(tuple(cs[col][row] for col in range(3)) for row in range(3))
+
+
+def mat3_to_euler_deg(R, ref=(0.0, 0.0, 0.0)):
+    """Inverse of euler_deg_to_mat3 (R = Rz*Ry*Rx).  Of the equivalent angle triples
+    (+-360 per axis and the flipped solution) the one closest to *ref* is returned,
+    like Blender's 'compatible euler' - keeps a curve from spinning between keys."""
+    sy = max(-1.0, min(1.0, -R[2][0]))
+    y = math.asin(sy)
+    if abs(sy) < 0.999999:
+        x = math.atan2(R[2][1], R[2][2])
+        z = math.atan2(R[1][0], R[0][0])
+    else:                                   # gimbal lock: put everything on x
+        z = 0.0
+        x = math.atan2(-R[1][2], R[1][1])
+    best, best_d = None, None
+    for cand in ((x, y, z), (x + math.pi, math.pi - y, z + math.pi)):
+        c = [math.degrees(a) for a in cand]
+        c = [a + 360.0 * round((r - a) / 360.0) for a, r in zip(c, ref)]
+        d = sum(abs(a - r) for a, r in zip(c, ref))
+        if best is None or d < best_d:
+            best, best_d = c, d
+    return tuple(best)
+
+
+def ga_pose_rotation(ctx, rot_deg):
+    """Engine rotate value (degrees) -> Blender pose rotation matrix P (see block comment)."""
+    M = ctx['M']
+    left = mat3_mul(mat3_transpose(M), mat3_transpose(ctx['Srp']))
+    mid = mat3_mul(mat3_mul(euler_deg_to_mat3(ctx['jo']), euler_deg_to_mat3(rot_deg)),
+                   euler_deg_to_mat3(ctx['ro']))
+    return mat3_mul(mat3_mul(left, mid), mat3_mul(ctx['Srb'], M))
+
+
+def ga_rotate_from_pose(ctx, P):
+    """Exact inverse of ga_pose_rotation: pose rotation matrix -> engine Rot matrix."""
+    M = ctx['M']
+    left = mat3_mul(mat3_mul(mat3_transpose(euler_deg_to_mat3(ctx['jo'])), ctx['Srp']), M)
+    right = mat3_mul(mat3_mul(mat3_transpose(M), mat3_transpose(ctx['Srb'])),
+                     mat3_transpose(euler_deg_to_mat3(ctx['ro'])))
+    return mat3_mul(mat3_mul(left, P), right)
+
+
+def mat3_angle_deg(A, B):
+    """Angle in degrees of the rotation that takes A to B."""
+    m = mat3_mul(mat3_transpose(A), B)
+    return math.degrees(math.acos(max(-1.0, min(1.0, (m[0][0] + m[1][1] + m[2][2] - 1.0) / 2.0))))
+
+
+def ga_rotate_static(ctx):
+    """Blender pose rotation (radians, XYZ Euler) of a bone at the file's rest rotation values."""
+    e = mat3_to_euler_deg(ga_pose_rotation(ctx, ctx['rest']))
+    return tuple(math.radians(a) for a in e)
+
+
+def ga_rotate_direct_map(ctx, keyed, tol_deg=0.01):
+    """Direct mapping of file rotate axes onto Blender Euler axes.
+
+    keyed : file rotate axes (0-2) that are keyed.
+    Returns {file_axis: (blender_axis, sign)} when every keyed axis turns the bone about exactly one
+    Blender axis AND the combination of all keyed axes equals the composed Blender Euler rotation
+    (so Blender value = sign * (file value - rest)); otherwise None (use the baked conversion).
+    Requires the bone's static pose rotation to be the identity."""
+    rest = list(ctx['rest'])
+    if mat3_angle_deg(ga_pose_rotation(ctx, rest), IDENT3) > tol_deg:
+        return None
+    mapping = {}
+    for k in keyed:
+        r = list(rest)
+        r[k] += 30.0
+        e = mat3_to_euler_deg(ga_pose_rotation(ctx, r))
+        big = [j for j in range(3) if abs(e[j]) > tol_deg]
+        if len(big) != 1 or abs(abs(e[big[0]]) - 30.0) > tol_deg:
+            return None
+        mapping[k] = (big[0], 1.0 if e[big[0]] > 0 else -1.0)
+    if len({j for j, _ in mapping.values()}) != len(mapping):
+        return None
+    for t in ((37.0, -71.0, 113.0), (-143.0, 29.0, 61.0)):
+        r = list(rest)
+        eul = [0.0, 0.0, 0.0]
+        for k, (j, sg) in mapping.items():
+            r[k] = rest[k] + t[k]
+            eul[j] = sg * t[k]
+        if mat3_angle_deg(ga_pose_rotation(ctx, r), euler_deg_to_mat3(eul)) > tol_deg:
+            return None
+    return mapping
+
+
+def ga_rotate_direct_from_blender(ctx, baxes):
+    """Same mapping, found from the Blender axes that have curves (used on export)."""
+    ks = []
+    for k in range(3):
+        m = ga_rotate_direct_map(ctx, [k])
+        if m is not None and m[k][0] in baxes:
+            ks.append(k)
+    if len(ks) != len(baxes):
+        return None
+    return ga_rotate_direct_map(ctx, ks)
+
+
+def ga_reduce_keys(pairs, tol):
+    """Drop redundant keys from [(frame, value)] sorted by frame.
+
+    First and last key are always kept.  An interior key is dropped when it lies within *tol* of the
+    straight line through the kept keys around it, so the engine's linear interpolation still reproduces
+    every dropped key to within *tol* (Douglas-Peucker on one channel)."""
+    n = len(pairs)
+    if n <= 2:
+        return list(pairs)
+    keep = [False] * n
+    keep[0] = keep[-1] = True
+    stack = [(0, n - 1)]
+    while stack:
+        i, j = stack.pop()
+        (f0, v0), (f1, v1) = pairs[i], pairs[j]
+        worst, wk = -1.0, None
+        for k in range(i + 1, j):
+            f, v = pairs[k]
+            line = v0 if f1 == f0 else v0 + (v1 - v0) * (f - f0) / (f1 - f0)
+            d = abs(v - line)
+            if d > worst:
+                worst, wk = d, k
+        if wk is not None and worst > tol:
+            keep[wk] = True
+            stack += [(i, wk), (wk, j)]
+    return [p for p, k in zip(pairs, keep) if k]
+
+
+def ga_rotate_to_blender(curves, ctx, extra_out=None, tol_deg=0.1):
+    """File rotate keys -> Blender rotation_euler keys.
+
+    curves : {axis(0-2): [(frame, radians), ...]}  sorted by frame (absolute engine values)
+    ctx    : {'M','Srp','Srb','jo','ro','rest'}  3x3 tuples / degree triples (see _ga_bone_rotate_ctx)
+    returns {blender_axis: [(frame, radians)]} containing only the axes that move.
+
+    Direct path: the keyed axes map one-to-one onto Blender axes -> same frames, no extra channels.
+    Baked path : otherwise the rotation is evaluated at the union of the bone's key frames; axes that
+                 stay equal to the static pose rotation are left out.
+                 v0.31.5: Blender interpolates the converted Euler angles LINEARLY but the conversion is
+                 not linear, so between two distant keys the preview can be far off - and a full turn
+                 (0 -> 360) looks like no motion at all.  Wherever the straight line between two
+                 neighbouring keys misses the true pose by more than tol_deg, a key is inserted at the
+                 middle INTEGER frame (halves are checked again).  The engine interpolates the original
+                 values linearly, so a key on that line changes nothing in the file's meaning.  The
+                 inserted frames are added to *extra_out* (a set) so the importer can mark them
+                 BREAKDOWN and the exporter can drop them again."""
+    if not curves:
+        return {}
+    dm = ga_rotate_direct_map(ctx, sorted(curves))
+    if dm is not None:
+        return {j: [(f, sg * (v - math.radians(ctx['rest'][k]))) for f, v in curves[k]]
+                for k, (j, sg) in dm.items()}
+    frames = sorted({f for keys in curves.values() for f, _ in keys})
+    static = ga_rotate_static(ctx)
+
+    def rot_at(f):
+        return [math.degrees(_ga_lin_eval(curves[a], f)) if a in curves else ctx['rest'][a]
+                for a in range(3)]
+    pts = {}
+    prev = tuple(math.degrees(a) for a in static)
+    for f in frames:
+        e = mat3_to_euler_deg(ga_pose_rotation(ctx, rot_at(f)), prev)
+        pts[f] = e
+        prev = e
+
+    def refine(f0, f1, depth):
+        # Douglas-Peucker style: look at EVERY integer frame between the two keys, insert a key at the
+        # worst one if it misses the true pose by more than tol_deg, then check both halves again.
+        # (Checking only the middle frame can pass by symmetry and miss big errors elsewhere.)
+        if depth > 12 or f1 - f0 < 2:
+            return
+        worst, wf, wlin = 0.0, None, None
+        for fm in range(int(f0) + 1, int(f1)):
+            t = (fm - f0) / (f1 - f0)
+            lin = tuple(a + (b - a) * t for a, b in zip(pts[f0], pts[f1]))
+            err = mat3_angle_deg(euler_deg_to_mat3(lin), ga_pose_rotation(ctx, rot_at(fm)))
+            if err > worst:
+                worst, wf, wlin = err, fm, lin
+        if wf is None or worst <= tol_deg:
+            return
+        pts[wf] = mat3_to_euler_deg(ga_pose_rotation(ctx, rot_at(wf)), wlin)
+        if extra_out is not None:
+            extra_out.add(wf)
+        refine(f0, wf, depth + 1)
+        refine(wf, f1, depth + 1)
+    if extra_out is not None:
+        for f0, f1 in zip(frames, frames[1:]):
+            refine(f0, f1, 0)
+    out = {0: [], 1: [], 2: []}
+    for f in sorted(pts):
+        for a in range(3):
+            out[a].append((f, math.radians(pts[f][a])))
+
+    def moves(a):
+        for _, v in out[a]:
+            d = (v - static[a] + math.pi) % (2.0 * math.pi) - math.pi
+            if abs(d) > 1e-4:
+                return True
+        return False
+    return {a: v for a, v in out.items() if moves(a)}
+
+
+def blender_rotate_to_ga(curves, ctx, fallback=None, tol_deg=0.02, ref_curves=None):
+    """Exact inverse of ga_rotate_to_blender (Blender keys -> file values, radians).
+
+    curves   : {axis: [(frame, radians)]}  Blender rotation_euler keys
+    fallback : (x, y, z) radians for a Blender axis without a curve; default = the static pose rotation
+    ref_curves : v0.31.5 {axis: [(frame, radians)]} the rotate curves of the ORIGINAL file, if known.  A
+                 rotation has many equivalent Euler triples (+-360 per axis, the flipped triple), and a
+                 full turn is invisible in a rotation matrix.  The triple closest to the original value
+                 is written, so unmodified keys come back exactly (spins and flips included); without
+                 it the triple closest to the previous key is used.
+    Axes that never leave the bone's rest rotation are dropped (same as 'no curve').
+    v0.31.6: tol_deg default raised from 1e-4 to 0.02 degrees; round trips of baked bones left
+    1e-3 degree noise on unkeyed axes that was written out as extra curves."""
+    if not curves:
+        return {}
+    dm = ga_rotate_direct_from_blender(ctx, sorted(curves))
+    if dm is not None:
+        out = {k: [(f, math.radians(ctx['rest'][k]) + sg * curves[j][i][1]) for i, (f, _) in enumerate(curves[j])]
+               for k, (j, sg) in dm.items()}
+        return {k: v for k, v in out.items()
+                if max(abs(math.degrees(val) - ctx['rest'][k]) for _, val in v) > tol_deg}
+    if fallback is None:
+        fallback = ga_rotate_static(ctx)
+    frames = sorted({f for keys in curves.values() for f, _ in keys})
+    out = {0: [], 1: [], 2: []}
+    prev = tuple(ctx['rest'])
+    for f in frames:
+        pe = [math.degrees(_ga_lin_eval(curves[a], f)) if a in curves else math.degrees(fallback[a])
+              for a in range(3)]
+        R = ga_rotate_from_pose(ctx, euler_deg_to_mat3(pe))
+        if ref_curves:
+            ref = tuple(math.degrees(_ga_lin_eval(ref_curves[a], f)) if a in ref_curves else ctx['rest'][a]
+                        for a in range(3))
+        else:
+            ref = prev
+        e = mat3_to_euler_deg(R, ref)
+        prev = e
+        for a in range(3):
+            out[a].append((f, math.radians(e[a])))
+    # v0.31.2: the baked path samples every axis at the union of the bone's key frames; remove the keys
+    # that only repeat a straight segment (tolerance = 1 raw unit at the shift the axis is encoded with).
+    for a in out:
+        degs = [(f, math.degrees(v)) for f, v in out[a]]
+        lsb = 1.0 / (1 << _compute_b2([v for _, v in degs]))
+        out[a] = [(f, math.radians(v)) for f, v in ga_reduce_keys(degs, lsb)]
+    return {a: v for a, v in out.items()
+            if max(abs(math.degrees(val) - ctx['rest'][a]) for _, val in v) > tol_deg}
+
+
+def _ga_bone_rotate_ctx(arm_obj, bone_name):
+    """Context for ga_rotate_to_blender, or None when the armature is not a BIND-mode import
+    (SEED-mode armatures and armatures imported before v0.31.0 keep the old direct mapping)."""
+    if str(arm_obj.get('fe_rest_mode', '')) != 'BIND':
+        return None
+    bone = arm_obj.data.bones.get(bone_name)
+    if bone is None:
+        return None
+    def rec(b):
+        h = str(b.get('fe_raw_rec_hex', ''))
+        return bytes.fromhex(h) if len(h) == BONE_STRIDE * 2 else None
+    def skin_rot(r):
+        v = struct.unpack('>12f', r[16:64])
+        return mat3_orthonormal(((v[0], v[1], v[2]), (v[4], v[5], v[6]), (v[8], v[9], v[10])))
+    r = rec(bone)
+    if r is None:
+        return None
+    if bone.parent is not None:
+        rp = rec(bone.parent)
+        if rp is None:
+            return None
+        Srp = skin_rot(rp)
+    else:
+        Srp = IDENT3
+    def triple(prop, off):
+        v = bone.get(prop)
+        if v is not None:
+            return tuple(float(x) for x in v)
+        return struct.unpack('>3f', r[off:off + 12])
+    m = bone.matrix_local.to_3x3()
+    return {
+        'M':    tuple(tuple(m[i][j] for j in range(3)) for i in range(3)),
+        'Srp':  Srp,
+        'Srb':  skin_rot(r),
+        'jo':   triple('fe_local_rot_deg', 100),
+        'ro':   triple('fe_rotate_axis_deg', 160),
+        'rest': struct.unpack('>3f', r[76:88]),
+    }
+
+
+def _ga_export_rotate_series(arm_obj, bone_name, fcurve_lookup, ref_curves=None):
+    """Blender rotation_euler F-curves of a bone -> {axis: [(frame, radians)]} in file values,
+    or None when the old direct mapping applies (see _ga_bone_rotate_ctx)."""
+    ctx = _ga_bone_rotate_ctx(arm_obj, bone_name)
+    if ctx is None:
+        return None
+    dp = f'pose.bones["{bone_name}"].rotation_euler'
+    curves = {}
+    for axis in range(3):
+        fc = fcurve_lookup.get((dp, axis))
+        if fc is not None and len(fc.keyframe_points):
+            # v0.31.5: BREAKDOWN keys are the extra preview keys the importer inserted; the file
+            # gets its own key frames back
+            pts = sorted((kp.co[0], kp.co[1]) for kp in fc.keyframe_points if kp.type != 'BREAKDOWN')
+            if pts:
+                curves[axis] = pts
+    if not curves:
+        return {}
+    return blender_rotate_to_ga(curves, ctx, ref_curves=ref_curves)
+
+
+def _ga_rotate_ref_from_raw(raw):
+    """Rotate curves of a .ga file (bytes) as {bone_id: {axis: [(frame, radians)]}}; {} if unreadable."""
+    try:
+        w = struct.unpack_from('>12I', raw, 0)
+        out = {}
+        for g in range(w[7]):
+            bone, _mask, first, count = struct.unpack_from('>4I', raw, w[8] + 16 * g)
+            for c in range(first, first + count):
+                ch, sr, _end, k, _u, off = struct.unpack_from('>6H', raw, w[9] + 12 * c)
+                if not 3 <= ch <= 5 or k == 0:
+                    continue
+                shift = (sr >> 8) & 0x3F
+                keys = [(float(fr), math.radians(v / float(1 << shift)))
+                        for fr, v in (struct.unpack_from('>Hh', raw, w[11] + (off + j) * 4) for j in range(k))]
+                out.setdefault(bone, {})[ch - 3] = keys
+        return out
+    except Exception:
+        return {}
+
+
+
+def ga_translate_rel_bind(Srp, M):
+    """v0.31.6: 'rel' for BIND-mode armatures.  The engine moves a bone's drawn vertices by
+    Wp . dT (Wp = parent's seed chain); Blender moves them by Dp . Rb . dl with Dp = Wp . Srp
+    (what the parent's pose draws), so dl = Rb^T . Srp^-1 . dT = rel^T . dT  with  rel = Srp . Rb
+    (Srp = skin rotation of the parent, orthonormal; Rb = the bone's rest rotation).
+    The SEED-mode rule (parent_rest^-1 . bone_rest) is only right when the parent's skin is the
+    inverse of its seed world, which is not the case under an identity-skin parent."""
+    return mat3_mul(Srp, M)
 
 
 def _ga_bone_translate_frame(arm_obj, bone_name):
@@ -487,6 +877,21 @@ def _ga_bone_translate_frame(arm_obj, bone_name):
     if len(hexs) == BONE_STRIDE * 2:
         rest = struct.unpack('>fff', bytes.fromhex(hexs)[88:100])
     m = bone.matrix_local.to_3x3()
+    if str(arm_obj.get('fe_rest_mode', '')) == 'BIND':
+        # v0.31.6: BIND-mode rule (see ga_translate_rel_bind)
+        Srp = IDENT3
+        if bone.parent is not None:
+            hp = str(bone.parent.get('fe_raw_rec_hex', ''))
+            if len(hp) == BONE_STRIDE * 2:
+                v = struct.unpack('>12f', bytes.fromhex(hp)[16:64])
+                Srp = mat3_orthonormal(((v[0], v[1], v[2]), (v[4], v[5], v[6]), (v[8], v[9], v[10])))
+        Mt = tuple(tuple(float(m[r][c]) for c in range(3)) for r in range(3))
+        rel = [list(r) for r in ga_translate_rel_bind(Srp, Mt)]
+        comp = (0.0, 0.0, 0.0)
+        pb = arm_obj.pose.bones.get(bone_name)
+        if pb is not None and 'fe_pose_location' in pb:
+            comp = tuple(float(v) for v in pb['fe_pose_location'])
+        return rest, rel, comp
     if bone.parent is not None:
         pm = bone.parent.matrix_local.to_3x3()
         # v0.30.0: file translate is expressed in the parent's CHAIN frame,
@@ -523,6 +928,11 @@ def _ga_export_translate_series(arm_obj, bone_name, fcurve_lookup):
 # shows int16 keys are interpolated LINEARLY between keys (ends hold).  Change
 # to 'BEZIER' only if FE10 turns out to differ.
 GA_INTERPOLATION = 'LINEAR'
+
+# v0.31.5: how far (degrees) the straight line between two converted rotate keys may miss the true pose
+# before the importer inserts an extra BREAKDOWN key.  Smaller = more extra keys, more accurate preview.
+# The extra keys are never exported.  Set to a huge value (e.g. 1e9) to switch them off.
+GA_PREVIEW_TOL_DEG = 0.1
 
 
 # =============================================================================
@@ -639,6 +1049,15 @@ def affine_inverse(a):
 def safe_scale(s):
     """A rest scale of 0 would make the chain singular; treat it as 1 for placement."""
     return tuple(v if abs(v) > 1e-6 else 1.0 for v in s)
+
+
+def apply_zero_rest_scale(sca, rest_scale):
+    """v0.31.4: the bone chain is built with safe_scale() (0 -> 1) so it stays invertible; the pose
+    scale taken from that chain therefore never contains a 0.  Put the stored zeros back so a weapon
+    whose rest scale is 0 is hidden in the seed pose, as in the game (an animation that keys the
+    scale to 1 shows it again).  Non-zero rest scales (any value, not only 1) already come through
+    the chain and are left alone."""
+    return tuple(0.0 if abs(r) <= 1e-6 else float(v) for v, r in zip(sca, rest_scale))
 
 
 def bone_local_affine(translate, pivot, joint_orient_deg, rotate_deg, rotate_axis_deg, scale):
@@ -1891,6 +2310,7 @@ def create_armature(obj_name, bones, armature_data_name=None, skeleton_filepath=
                 n_fail += 1
                 continue
             eul = quat.to_euler('XYZ')
+            sca = apply_zero_rest_scale(sca, b['scale'])
             pbone.rotation_mode  = 'XYZ'
             pbone.location       = loc
             pbone.rotation_euler = eul
@@ -1905,6 +2325,9 @@ def create_armature(obj_name, bones, armature_data_name=None, skeleton_filepath=
     print(f"  Stored on all bones: fe_bone_index, fe_bone_flags, "
           f"fe_pos_source, fe_bind_matrix_hex")
     
+    # v0.31.0: remembered so the .ga import/export knows which rotation mapping applies
+    arm_obj['fe_rest_mode'] = rest_mode
+
     # Store the skeleton filepath if provided (for auto-filling reference skeleton in exports)
     if skeleton_filepath:
         arm_obj['fe_skeleton_filepath'] = skeleton_filepath
@@ -2023,6 +2446,68 @@ def read_ga_file(filepath):
 # ANIMATION (.ga) — IMPORT INTO BLENDER
 # =============================================================================
 
+# =============================================================================
+# .ga CHANNELS THE PLUGIN DOES NOT CONVERT  (v0.31.7)
+# =============================================================================
+#
+# Only channels 0-8 (scale / rotate / translate, XYZ) become Blender F-curves.  Any other
+# curve in a .ga file (rotate pivot 12-14, joint orient 9-11 - never seen -, or a channel
+# nobody has met yet) used to be dropped on import and therefore missing from the export.
+# They are now kept on the ACTION (never on the bones, so several actions cannot conflict)
+# as the JSON string property  action['ga_extra_curves']:
+#
+#     {"<blender bone name>": {"<channel>": {"shift": <scale byte>, "keys": [[frame, raw_int16], ...]}}}
+#
+# Keys are stored RAW (frame, int16) with the file's own scale shift, so the round trip is
+# lossless.  The exporter writes them back unchanged next to the bone's other channels.
+# Bones are matched by Blender name: a deleted or renamed bone loses its extra curves
+# (reported in the console).
+
+def ga_collect_extra_curves(ga_data, bone_id_to_name):
+    """{bone_name: {channel: {'shift', 'keys'}}} for every curve whose channel is not in _GA_CHANNEL.
+    Curves of bones that are not in *bone_id_to_name* (not in the armature) are not kept."""
+    out = {}
+    frame_data = ga_data['frame_data']
+    for bt in ga_data['bone_table']:
+        name = bone_id_to_name.get(bt['bone_id'])
+        if name is None:
+            continue
+        for mi in range(bt['meta_start'], bt['meta_start'] + bt['meta_count']):
+            meta = ga_data['metadata'][mi]
+            ch = meta['channel_type']
+            if ch in _GA_CHANNEL:
+                continue
+            start, n = meta['fd_start_idx'], meta['num_keyframes']
+            keys = [[fd['frame'], fd['value']] for fd in frame_data[start:start + n]]
+            if keys:
+                out.setdefault(name, {})[str(ch)] = {'shift': meta['curve_type'], 'keys': keys}
+    return out
+
+
+def ga_extra_curves_to_channels(extras, name_to_bone_id):
+    """Turn the stored extras into export channel records.
+
+    extras          : the dict from ga_collect_extra_curves (already json-decoded)
+    name_to_bone_id : {blender bone name: CURRENT fe_bone_index}
+    returns ({bone_id: [channel record, ...]}, [names of bones that no longer exist])"""
+    chans, skipped = {}, []
+    for name, per_ch in extras.items():
+        bid = name_to_bone_id.get(name)
+        if bid is None:
+            skipped.append(name)
+            continue
+        for ch_s, d in per_ch.items():
+            ch = int(ch_s)
+            if ch in _GA_CHANNEL or not d.get('keys'):
+                continue
+            chans.setdefault(bid, []).append({
+                'channel_type': ch,
+                'curve_type':   int(d['shift']),
+                'kf_pairs':     [(int(f), int(v)) for f, v in d['keys']],
+            })
+    return chans, skipped
+
+
 def import_ga_to_blender(context, ga_data, armature_obj, action_name):
     """Create a Blender Action from parsed .ga data and apply it to *armature_obj*."""
     arm = armature_obj
@@ -2049,6 +2534,15 @@ def import_ga_to_blender(context, ga_data, armature_obj, action_name):
     action['Start Frame']  = ga_data['start_frame']
     action['End Frame']    = ga_data['end_frame']
     action['ga_loop_flag']    = ga_data['loop_flag']
+
+    # v0.31.7: keep the curves we cannot convert (rotate pivot etc.) on the action
+    import json as _json_x
+    _extras = ga_collect_extra_curves(ga_data, bone_id_to_name)
+    if _extras:
+        action['ga_extra_curves'] = _json_x.dumps(_extras)
+        print(f"  Kept unconverted curves on the action: "
+              f"{sum(len(v) for v in _extras.values())} curve(s) on {len(_extras)} bone(s) "
+              f"(channels {sorted({int(c) for v in _extras.values() for c in v})})")
 
     context.scene.frame_start = int(ga_data['start_frame'])
     context.scene.frame_end   = int(ga_data['end_frame'])
@@ -2134,6 +2628,28 @@ def import_ga_to_blender(context, ga_data, armature_obj, action_name):
                     6 + ai, ai, _trans_b2.get(ai, _b2_default), _conv[ai],
                     'location', f'pose.bones["{bone_name}"].location'))
 
+        # ── Pass 1c (v0.31.0): file rotate keys are ABSOLUTE engine values ──
+        # In a BIND-mode armature they must be converted to Blender's pose
+        # rotation at the file's own key frames (see ga_rotate_to_blender).
+        _rot_in = {}
+        _rot_b2 = {}
+        _extra_frames = set()
+        for (ct, ai, cb2, fv, pn, dp) in _bone_channels:
+            if ct in (3, 4, 5):
+                _rot_in[ai] = fv
+                _rot_b2[ai] = cb2
+        if _rot_in:
+            _rctx = _ga_bone_rotate_ctx(arm, bone_name)
+            if _rctx is not None:
+                _extra_frames = set()
+                _rconv = ga_rotate_to_blender(_rot_in, _rctx, _extra_frames, GA_PREVIEW_TOL_DEG)
+                _rb2_default = next(iter(_rot_b2.values()))
+                _bone_channels = [e for e in _bone_channels if e[0] not in (3, 4, 5)]
+                for ai in sorted(_rconv):
+                    _bone_channels.append((
+                        3 + ai, ai, _rot_b2.get(ai, _rb2_default), _rconv[ai],
+                        'rotation_euler', f'pose.bones["{bone_name}"].rotation_euler'))
+
         # ── Pass 2: create FCurves from decoded data ───────────────────────
         for channel_type, arr_idx, b2, frames_and_vals, prop_name, data_path in _bone_channels:
             fcurve = fcurves.find(data_path, index=arr_idx)
@@ -2145,6 +2661,8 @@ def import_ga_to_blender(context, ga_data, armature_obj, action_name):
             for ki, (frame_num, blender_val) in enumerate(frames_and_vals):
                 kp           = fcurve.keyframe_points[ki]
                 kp.co        = (frame_num, blender_val)
+                if prop_name == 'rotation_euler' and frame_num in _extra_frames:
+                    kp.type = 'BREAKDOWN'    # v0.31.5: inserted for preview accuracy, not in the file
                 # v0.29.0: linear between keys, like the engine (was BEZIER
                 # AUTO_CLAMPED for every curve whose B2 != 15).
                 kp.interpolation = GA_INTERPOLATION
@@ -2372,17 +2890,27 @@ def export_ga_from_blender(armature_obj, action, filepath):
 
     bone_channels = defaultdict(list)
     resolved_b2_map = {}
+    # v0.31.5: the file this action came from says which of the equivalent Euler triples to write
+    _rot_refs = _ga_rotate_ref_from_raw(raw_orig) if raw_orig is not None else {}
 
     for bone_id in sorted(bone_id_to_name.keys()):
         bone_name = bone_id_to_name[bone_id]
         # v0.29.0: translate keys go through the exact inverse of the import
         # conversion (Blender delta location -> absolute file value).
         trans_series = _ga_export_translate_series(armature_obj, bone_name, fcurve_lookup)
+        # v0.31.0: rotate keys of BIND-mode armatures go through the exact inverse of
+        # the import conversion (None = old direct mapping).
+        rot_series = _ga_export_rotate_series(armature_obj, bone_name, fcurve_lookup,
+                                              _rot_refs.get(bone_id))
         for channel_type in sorted(_GA_CHANNEL.keys()):
             prop_name, arr_idx, _ = _GA_CHANNEL[channel_type]
             data_path = f'pose.bones["{bone_name}"].{prop_name}'
             if 6 <= channel_type <= 8:
                 src_pairs = trans_series.get(arr_idx)
+                if not src_pairs:
+                    continue
+            elif 3 <= channel_type <= 5 and rot_series is not None:
+                src_pairs = rot_series.get(arr_idx)
                 if not src_pairs:
                     continue
             else:
@@ -2424,6 +2952,26 @@ def export_ga_from_blender(armature_obj, action, filepath):
             })
             resolved_b2_map[b2_key] = b2
 
+    # v0.31.7: write back the curves kept at import (rotate pivot etc.), unchanged
+    _extra_raw = action.get('ga_extra_curves')
+    if _extra_raw:
+        try:
+            _extras = _json.loads(str(_extra_raw))
+        except Exception:
+            _extras = {}
+        _name_to_id = {}
+        for ab in armature_obj.data.bones:
+            if ab.get('fe_bone_index') is not None:
+                _name_to_id[ab.name] = int(ab['fe_bone_index'])
+        _ech, _eskip = ga_extra_curves_to_channels(_extras, _name_to_id)
+        for _bid, _lst in _ech.items():
+            bone_channels[_bid].extend(_lst)
+        print(f"  Extra curves written back: {sum(len(v) for v in _ech.values())} on {len(_ech)} bone(s)")
+        if _eskip:
+            print(f"  WARNING: extra curves dropped for bones no longer in the armature: {_eskip}")
+    for _bid in bone_channels:                      # the file keeps channels in ascending order per bone
+        bone_channels[_bid].sort(key=lambda c: c['channel_type'])
+
     if not bone_channels:
         print("  ERROR: no animated channels found.")
         return False
@@ -2450,7 +2998,8 @@ def export_ga_from_blender(armature_obj, action, filepath):
             b1 = ch['channel_type']
             if   0x00 <= b1 <= 0x02: channel_mask |= 0x08
             elif 0x03 <= b1 <= 0x05: channel_mask |= 0x10
-            else:                    channel_mask |= 0x20
+            elif 0x06 <= b1 <= 0x08: channel_mask |= 0x20
+            # v0.31.7: other channels (rotate pivot 12-14, ...) add no mask bit ("mask 0" in the files)
 
         meta_start = meta_idx
         for ch in channels:
@@ -7079,6 +7628,9 @@ class ImportGSkeleton(bpy.types.Operator, ImportHelper):
         items=[('BIND', "Mesh bind pose", "Place bones where the mesh was bound (lines up with the .gs mesh)"),
                ('SEED', "Engine seed pose", "Place bones at the skeleton's stored pose")],
         default='BIND',
+        # v0.31.3: hidden from the import dialog; BIND is always used for now.
+        # Remove 'HIDDEN' to show the Mesh bind pose / Engine seed pose choice again.
+        options={'HIDDEN'},
     )
 
     def execute(self, context):
@@ -7132,6 +7684,9 @@ class ImportGSWithSkeleton(bpy.types.Operator, ImportHelper):
         items=[('BIND', "Mesh bind pose", "Place bones where the mesh was bound (lines up with the mesh)"),
                ('SEED', "Engine seed pose", "Place bones at the skeleton's stored pose")],
         default='BIND',
+        # v0.31.3: hidden from the import dialog; BIND is always used for now.
+        # Remove 'HIDDEN' to show the Mesh bind pose / Engine seed pose choice again.
+        options={'HIDDEN'},
     )
 
     def execute(self, context):
