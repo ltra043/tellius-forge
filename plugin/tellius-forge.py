@@ -2,7 +2,7 @@ bl_info = {
     "name": "Tellius Forge",
     "description": "Fire Emblem 9 & 10 Asset Handler",
     "author": "Jade (ltra043), based on work by Zheneq and ATMachine",
-    "version": (0, 33, 1),
+    "version": (0, 34, 6),
     "blender": (4, 2, 0),
     "location": "File > Import, File > Export",
     "category": "Import-Export",
@@ -3450,8 +3450,67 @@ def read_gs_file(filepath, bones=None):
     chunk_addr = addrs[6] or addrs[7] or addrs[8]
     chunk_processed = False
 
+    # ── v0.34.0: one Blender vertex per (table vertex, bone) ─────────────────────
+    # In ymu bodies the bone is chosen per display-list OCCURRENCE (the skinning byte), so one
+    # table vertex can be drawn under several bones (shared seam vertices, and whole meshes drawn
+    # twice under two bones).  A Blender vertex can only follow one bone, so the first (vertex, bone)
+    # pair keeps the table index and every further pair becomes an extra Blender vertex appended
+    # after the table (same position).  mesh_data['vertex_origin'] gives each Blender vertex its
+    # table index; create_blender_mesh stores it as the point attribute 'fe_orig_vertex'.
+    # Only for non-composite bodies read together with a skeleton (composite / zu is unchanged).
+    dup_mode = (raw_cb_ptr == 0 and not use_composite and bones is not None)
+    table_n = len(reg_v)
+    extra_pos, extra_origin = [], []
+    first_bone_of, vkey_map = {}, {}
+
+    def occurrence_bone(pal, sb_byte, slot_idx):
+        """Bone a display-list occurrence is drawn with: palette bone (skinning byte // 3) when the
+        chunk has a palette, else the chunk's PtrA bone byte; None when it is not a valid bone."""
+        if pal is not None:
+            s_ = sb_byte // 3
+            if s_ < len(pal) and pal[s_] < len(bones):
+                return pal[s_]
+        return slot_idx if slot_idx < len(bones) else None
+
+    def vertex_for_bone(vi, bone):
+        """Blender vertex index for table vertex *vi* drawn under *bone* (see the block above)."""
+        key = (vi, bone)
+        got = vkey_map.get(key)
+        if got is not None:
+            return got
+        if vi not in first_bone_of:
+            first_bone_of[vi] = bone
+            new = vi
+        else:
+            new = table_n + len(extra_pos)
+            extra_pos.append(reg_v[vi])
+            extra_origin.append(vi)
+        vkey_map[key] = new
+        if bone is not None:
+            skin_weights[new] = bone
+        return new
+
+    def origin_of(i):
+        return extra_origin[i - table_n] if (dup_mode and i >= table_n) else i
+
+    # v0.34.1: in a composite (zu / zmap) file a chunk WITHOUT format bit 0 does not use the composite buffer;
+    # its display-list indices point into the REGULAR position table (e.g. the AX weapon of FE10 zu bodies).
+    # Those vertices are appended after the composite vertices (Blender index = comp_n + table index).
+    comp_n = len(comp_vertices)
+    reg_extra = []
+    gap_multi = {}      # v0.34.2: slot -> [(bone, weight)]
+
     if chunk_addr and nums[6]:
         chunk_processed = True
+        # v0.34.5: draw list (render pass) of every chunk record, by file offset
+        list_of_addr = {}
+        for lid_, hoff_ in enumerate((0x5C, 0x60, 0x64)):
+            a_ = struct.unpack('>I', data[hoff_:hoff_ + 4])[0]
+            seen_ = set()
+            while a_ and a_ + base_offset not in seen_ and a_ + base_offset + 8 <= len(data):
+                seen_.add(a_ + base_offset)
+                list_of_addr[a_ + base_offset] = lid_
+                a_ = struct.unpack('>I', data[a_ + base_offset + 4:a_ + base_offset + 8])[0]
         pos = chunk_addr; chunks = []
         for _ in range(nums[6]):
             # v24.6: Fixed - display list pointer is at +0x14, not +0x20
@@ -3462,6 +3521,9 @@ def read_gs_file(filepath, bones=None):
             ptr_a_raw = struct.unpack('>I', data[pos:pos+4])[0]
             ptr_a = ptr_a_raw + 0x20 if ptr_a_raw > 0 else 0
             slot_idx = data[ptr_a + 0x1D] if ptr_a > 0 and ptr_a < len(data) else 2
+            # v0.34.1: PtrA +0x1C is a u16 bone index (KLG); slot_idx above is its low byte
+            ptra_bone = (struct.unpack('>H', data[ptr_a + 0x1C:ptr_a + 0x1E])[0]
+                         if 0 < ptr_a < len(data) - 0x20 else slot_idx)
             
             chunks.append({
                 'format':    struct.unpack('>H', data[pos+8:pos+10])[0],
@@ -3471,6 +3533,8 @@ def read_gs_file(filepath, bones=None):
                 'entry_ptr': pos,
                 'mat_idx':   data[pos + 11],
                 'slot_idx':  slot_idx,
+                'ptra_bone': ptra_bone,
+                'list':      list_of_addr.get(pos, 0),
             })
             pos += 32
         
@@ -3544,66 +3608,52 @@ def read_gs_file(filepath, bones=None):
         # - Skip null entries (all 12 bytes = 0x00)
         # - For each non-null vertex, apply current gap record
         # - Gap records specify count of vertices they apply to
-        gap_mapping = {}  # cb_vertex_index -> bone_id
-        
+        gap_mapping = {}  # cb_vertex_index -> first bone_id (kept for the single-bone fallback)
+
+        # v0.34.2: weight records are read with KLG's exact layout (composite header: +0x00 record offset,
+        # +0x04 vertex data offset, +0x08 record count, +0x0A vertex count).  Record (0x18 bytes):
+        #   +0x00 bones[4] int16 (-1 = unused)   +0x08 weights[4] uint8 (out of 256, not renormalised)
+        #   +0x0C u32 block offset (32-byte aligned)   +0x12 u8 first vertex in the block (0/4/8)
+        #   +0x13 u8 bone count   +0x14 u16 vertex count
+        # The record's vertices are the slots  (block offset + first vertex) // 12 .. + vertex count - 1.
+        # (Same slots the old "apply records to the non-null slots in order" rule gave: checked on kniaUt_ax.)
+        # gap_multi[slot] = [(bone_id, weight 0-1), ...] for every bone of the record.
         if use_composite and bones is not None:
-            # Use dynamically discovered CB location (from 0x68 pointer)
             cb_header = cb_base if cb_base else 0xB060
-            if not cb_header:
-                print("    WARNING: cb_base not set, skipping gap_mapping")
-            vertex_offset = struct.unpack('>I', data[cb_header+4:cb_header+8])[0]
-            num_gap_records = struct.unpack('>H', data[cb_header+0x08:cb_header+0x0A])[0]
+            n_rec = struct.unpack('>H', data[cb_header+0x08:cb_header+0x0A])[0]
             num_cb_verts = struct.unpack('>H', data[cb_header+0x0A:cb_header+0x0C])[0]
-            vert_start = cb_header + vertex_offset
-            
-            # First, find all non-null CB vertex indices in order
-            non_null_cb_indices = []
-            for cb_idx in range(num_cb_verts):
-                vpx = vert_start + cb_idx * 12
-                vertex_data = data[vpx:vpx+12]
-                if vertex_data != b'\x00' * 12:
-                    non_null_cb_indices.append(cb_idx)
-            
-            print(f"  [GAP v25.0] CB declares {num_cb_verts} vertices, {len(non_null_cb_indices)} non-null")
-            
-            # Now apply gap records to non-null vertices in order
-            gap_record_base = cb_header + 0x10
-            gap_record_idx = 0
-            non_null_idx = 0
-            
-            for i in range(num_gap_records):
-                off = gap_record_base + i * 0x18
+            rec_base = cb_header + struct.unpack('>I', data[cb_header:cb_header+4])[0]
+            n_bad_bones = 0
+            for i in range(n_rec):
+                off = rec_base + i * 0x18
                 if off + 0x18 > len(data):
                     break
-                    
-                bone_a = struct.unpack('>H', data[off:off+2])[0]
-                bone_b = struct.unpack('>H', data[off+2:off+4])[0]
-                vertex_count = struct.unpack('>H', data[off+0x14:off+0x16])[0]
-                
-                # Use first bone as primary (single-bone approach)
-                if bone_a != 65535:
-                    primary_bone = bone_a
-                elif bone_b != 65535:
-                    primary_bone = bone_b
-                else:
-                    primary_bone = 0  # Invalid
-                
-                # Apply to next 'vertex_count' non-null CB vertices
-                for j in range(vertex_count):
-                    if non_null_idx < len(non_null_cb_indices):
-                        cb_vert_idx = non_null_cb_indices[non_null_idx]
-                        if 0 < primary_bone < len(bones):
-                            gap_mapping[cb_vert_idx] = primary_bone
-                        non_null_idx += 1
-                    else:
-                        break
-                gap_record_idx += 1
-            
-            # Track vertices that should fallback (null CB entries)
-            null_count = num_cb_verts - len(non_null_cb_indices)
-            print(f"    Gap mapping: {len(gap_mapping)} vertices mapped")
-            print(f"    Null CB entries (fallback): {null_count}")
-            print(f"    Gap records used: {gap_record_idx}")
+                rbones = struct.unpack('>4h', data[off:off+8])
+                rwts   = struct.unpack('>4B', data[off+8:off+12])
+                blk    = struct.unpack('>I', data[off+0x0C:off+0x10])[0]
+                first_v, n_b = data[off+0x12], data[off+0x13]
+                vcount = struct.unpack('>H', data[off+0x14:off+0x16])[0]
+                pairs = []
+                for k in range(4):
+                    b_ = rbones[k]
+                    if b_ < 0:
+                        continue
+                    if b_ >= len(bones):
+                        n_bad_bones += 1
+                        continue
+                    if n_b > 1 and rwts[k] == 0:
+                        continue
+                    pairs.append((b_, (rwts[k] / 256.0) if n_b > 1 else 1.0))
+                if not pairs:
+                    continue
+                s0 = (blk + first_v) // 12
+                for slot in range(s0, min(s0 + vcount, num_cb_verts)):
+                    gap_multi[slot] = pairs
+                    gap_mapping[slot] = pairs[0][0]
+            n_multi = sum(1 for p in gap_multi.values() if len(p) > 1)
+            print(f"  [GAP v0.34.2] {n_rec} weight records -> {len(gap_mapping)} slots "
+                  f"({n_multi} with more than one bone)"
+                  + (f"; {n_bad_bones} bone reference(s) outside the skeleton ignored" if n_bad_bones else ""))
         
         # ── v25.0: Debug - show gap_mapping bone distribution with X,Y ranges ──────────
         if gap_mapping and use_composite:
@@ -3650,6 +3700,11 @@ def read_gs_file(filepath, bones=None):
                 continue
 
             chunk_palette = _read_chunk_palette(chunk['entry_ptr']) if (sb and not use_cb) else None
+            cb_regular = bool(use_composite and not use_cb)      # v0.34.1: regular-table chunk inside a composite file
+            if cb_regular and not reg_extra:
+                reg_extra.extend(reg_v)
+                print(f"  [v0.34.1] chunk {ci} does not use the composite buffer: reading the regular "
+                      f"position table ({len(reg_v)} vertices, appended after the {comp_n} composite vertices)")
 
             chunk_verts = []   # v24.1: collect (vertex_idx, sb_byte) for skinning
             skipped_verts = 0  # v24.6: debug tracking
@@ -3680,34 +3735,43 @@ def read_gs_file(filepath, bones=None):
                     ui = struct.unpack('>H', data[tp:tp+2])[0]; tp += 2
                     if hu: tp += 2
                     
+                    bl_vi = vi            # v0.34.0: Blender vertex for this occurrence
+                    if dup_mode and vi < table_n:
+                        bl_vi = vertex_for_bone(vi, occurrence_bone(chunk_palette, sb_byte, chunk['slot_idx']))
+                    if cb_regular and vi < len(reg_v):
+                        bl_vi = comp_n + vi          # v0.34.1
+
                     # v24.6: Clamp indices to valid ranges instead of skipping faces
                     # This handles cases where vert/norm/uv counts don't match (e.g., pegasus2: 390 verts, 363 norms, 215 UVs)
                     ui_safe = ui if ui < len(uvs) else (len(uvs) - 1 if uvs else 0)
                     ni_safe = ni
                     
                     # Determine which vertex buffer and get valid normal count
-                    if vi < len(comp_vertices):
+                    if cb_regular:                   # v0.34.1: regular table, not the composite buffer
+                        if vi < len(reg_v):
+                            sv.append((bl_vi, ni, ui_safe, col_i))
+                    elif vi < len(comp_vertices):
                         norm_count = len(comp_normals) if comp_normals else 0
                         ni_safe = ni if ni < norm_count else (norm_count - 1 if norm_count > 0 else 0)
                         if ui < len(uvs):
-                            sv.append((vi, ni, ui, col_i))
+                            sv.append((bl_vi, ni, ui, col_i))
                         elif norm_count > 0:
-                            sv.append((vi, ni_safe, ui_safe, col_i))
+                            sv.append((bl_vi, ni_safe, ui_safe, col_i))
                             skipped_verts += 1
                     elif vi < len(reg_v):
                         norm_count = len(reg_n) if reg_n else 0
                         ni_safe = ni if ni < norm_count else (norm_count - 1 if norm_count > 0 else 0)
                         if ui < len(uvs):
-                            sv.append((vi, ni, ui, col_i))
+                            sv.append((bl_vi, ni, ui, col_i))
                         elif norm_count > 0:
-                            sv.append((vi, ni_safe, ui_safe, col_i))
+                            sv.append((bl_vi, ni_safe, ui_safe, col_i))
                             skipped_verts += 1
                     chunk_verts.append((vi, sb_byte))
 
                 for i in range(len(sv) - 2):
                     tri = ([sv[i], sv[i+1], sv[i+2]] if i % 2 == 0
                            else [sv[i], sv[i+2], sv[i+1]])
-                    vi0, vi1, vi2 = tri[0][0], tri[1][0], tri[2][0]
+                    vi0, vi1, vi2 = origin_of(tri[0][0]), origin_of(tri[1][0]), origin_of(tri[2][0])
                     if vi0 != vi1 and vi1 != vi2 and vi0 != vi2:
                         faces.append(tri)
 
@@ -3732,7 +3796,7 @@ def read_gs_file(filepath, bones=None):
             # actual draw call, so the last chunk to draw the vertex wins.
             # Removing the first-wins guard matches that behaviour and prevents
             # boundary vertices from being mis-assigned to the wrong bone.
-            if chunk_palette and bones is not None:
+            if chunk_palette and bones is not None and not dup_mode:
                 for vi, sb_byte in chunk_verts:
                     slot = sb_byte // 3
                     if slot < len(chunk_palette):
@@ -3746,11 +3810,20 @@ def read_gs_file(filepath, bones=None):
             unique_verts = set(all_chunk_verts[ci])
             slot_idx = chunk['slot_idx']
 
-            if raw_cb_ptr == 0 and bones is not None:
+            if raw_cb_ptr == 0 and bones is not None and not dup_mode:
                 if slot_idx < len(bones):
                     for vi in unique_verts:
                         if vi not in skin_weights:
                             skin_weights[vi] = slot_idx
+
+            elif cb_regular and bones is not None:
+                # v0.34.1: single-bone shape in a composite file -> its PtrA bone (u16), falling back to the chunk bone
+                _rb = chunk['ptra_bone']
+                if not _rb < len(bones):
+                    _rb = struct.unpack('>H', data[chunk['entry_ptr'] + 12:chunk['entry_ptr'] + 14])[0]
+                if _rb < len(bones):
+                    for vi in unique_verts:
+                        skin_weights[comp_n + vi] = _rb
 
             elif raw_cb_ptr != 0 and use_composite and bones is not None:
                 # Has CB - use gap_mapping only
@@ -3786,12 +3859,21 @@ def read_gs_file(filepath, bones=None):
                   f"verts={_n_unique:4d}  faces={_n_faces_c:4d}  "
                   f"palette={_palette_str}")
 
+    # v0.34.2: weighted skinning for composite slots that were given a bone above (several bones / weights)
+    skin_multi = {}
+    for _vi in skin_weights:
+        _gm = gap_multi.get(_vi) if _vi < comp_n else None
+        if _gm and (len(_gm) > 1 or abs(_gm[0][1] - 1.0) > 1e-9):
+            skin_multi[_vi] = _gm
+    if skin_multi:
+        print(f"  [IMPORT] v0.34.2: {len(skin_multi)} vertices are weighted to more than one bone")
+
     # ── Post-loop skin summary ─────────────────────────────────────────────────
     if bones is not None and skin_weights:
         _bvc: dict = {}
         for _vi, _bid in skin_weights.items():
             _bvc[_bid] = _bvc.get(_bid, 0) + 1
-        _total_verts = len(comp_vertices if use_composite else vertices)
+        _total_verts = len(comp_vertices if use_composite else vertices) + len(reg_extra)
         _unskinned   = _total_verts - len(skin_weights)
         print(f"  [IMPORT] Skinning: {len(skin_weights)}/{_total_verts} verts "
               f"across {len(_bvc)} bones, {_unskinned} unskinned")
@@ -3878,7 +3960,9 @@ def read_gs_file(filepath, bones=None):
                     'uv_sy':   uv_sy,
                 })
 
+            _pass = next((c_['list'] for c_ in chunks if c_['mat_idx'] == mi), 0) if chunk_addr and nums[6] else 0
             materials.append({
+                'render_pass':  _pass,        # v0.34.5
                 'name':         mat_name,
                 'diffuse_rgba': diffuse_rgba,
                 'spec_rgba':    spec_rgba,
@@ -3985,6 +4069,8 @@ def read_gs_file(filepath, bones=None):
     #     ... (disabled)
     pass
 
+    if dup_mode and extra_pos:
+        print(f"  [IMPORT] v0.34.0: {len(extra_pos)} extra Blender vertices (same table vertex drawn under more than one bone)")
     if skin_weights:
         print(f"  Skin weights: {len(skin_weights)} verts across "
               f"{len(set(skin_weights.values()))} bones")
@@ -3993,14 +4079,20 @@ def read_gs_file(filepath, bones=None):
           if use_composite and addrs[9] else addrs[0])
 
     return {
-        'vertices': active_v, 'normals': comp_normals if use_composite else reg_n,
+        'vertices': list(active_v) + extra_pos + reg_extra, 'normals': comp_normals if use_composite else reg_n,
         'uvs': uvs, 'colors': colors, 'faces': faces,
         'raw_file_data': data.hex(), 'vertex_offset': vo,
-        'vertex_count': len(active_v), 'vertex_scale': vert_scale,
+        'vertex_count': len(active_v), 'vertex_scale': vert_scale,   # vertex_count = TABLE size (v0.34.0)
+        # v0.34.4: composite bodies also get the attribute (Blender index = original slot / regular index)
+        'vertex_origin': ((list(range(len(active_v))) + extra_origin) if dup_mode
+                          else (list(range(len(active_v) + len(reg_extra))) if use_composite else None)),
         'used_composite': use_composite,
         'composite_offset': addrs[9] if addrs[9] else 0,
         'composite_shift':  cb_shift,
+        'composite_regular_offset': comp_n,      # v0.34.1
+        'composite_regular_count':  len(reg_extra),
         'skin_weights': skin_weights,
+        'skin_multi': skin_multi,          # v0.34.2 {vertex: [(bone, weight)]}
         'uv_offset':    addrs[2],
         'uv_count':     nums[2],
         'uv_scale':     uv_scale,
@@ -4014,6 +4106,7 @@ def read_gs_file(filepath, bones=None):
         'chunk_face_starts':  chunk_face_starts,
         'chunk_face_counts':  chunk_face_counts,
         'chunk_mat_indices':  chunk_mat_indices_raw,
+        'chunk_has_color':    [bool(c_['format2'] & 0x10) for c_ in chunks] if (chunk_addr and nums[6]) else [],   # v0.34.6
         # v28: track degenerate faces removed at import (computed in create_mesh_from_data)
         'culled_faces':       0,  # Will be updated in create_mesh_from_data
     }
@@ -4388,6 +4481,57 @@ def setup_shader_tree(material, mix_factor=None):
 
 
 # =============================================================================
+# ORIGINAL-VERTEX ATTRIBUTE  (v0.34.0)
+# =============================================================================
+#
+# Point attribute 'fe_orig_vertex' (INT) stores, for every Blender vertex of an imported body,
+# its index in the file's vertex table PLUS ONE (0 = vertex not from the file, e.g. added by the
+# User).  Vertices that share a table vertex but follow different bones (see read_gs_file) carry
+# the same value.  On export, such vertices that are still at the same position are written back
+# as ONE table entry, so the table keeps its original size on every import/export cycle.
+
+FE_ORIG_VERTEX_ATTR = 'fe_orig_vertex'
+
+
+def gs_set_orig_vertex_attribute(mesh, origins):
+    """Store origins[i] (table index of Blender vertex i) as the INT point attribute (+1)."""
+    attr = mesh.attributes.new(name=FE_ORIG_VERTEX_ATTR, type='INT', domain='POINT')
+    attr.data.foreach_set('value', [int(o) + 1 for o in origins])
+
+
+def gs_vertex_origins(mesh):
+    """List of table indices per Blender vertex (-1 = not from the file), or None when the mesh has
+    no 'fe_orig_vertex' attribute (imported before v0.34.0)."""
+    attr = mesh.attributes.get(FE_ORIG_VERTEX_ATTR)
+    if attr is None or len(attr.data) != len(mesh.vertices):
+        return None
+    vals = [0] * len(mesh.vertices)
+    attr.data.foreach_get('value', vals)
+    return [v - 1 for v in vals]
+
+
+def gs_build_vertex_table(origins, quant):
+    """Merge coincident duplicates into one vertex-table entry.
+
+    origins[i] : table index of Blender vertex i, or -1 (not from the file)
+    quant[i]   : its position as stored integers (x, y, z)
+    Returns (bl_to_table, table_src): the table index of every Blender vertex, and for every table
+    entry the Blender vertex whose position is written.  Vertices with the same origin AND the same
+    stored position share an entry; anything else keeps its own.  Table order = Blender order, so an
+    unedited import gives back the original table exactly (duplicates sit after the original vertices)."""
+    key_to_t, bl_to_table, table_src = {}, [], []
+    for i, (o, q) in enumerate(zip(origins, quant)):
+        key = (o, q) if o >= 0 else ('own', i)
+        t = key_to_t.get(key)
+        if t is None:
+            t = len(table_src)
+            key_to_t[key] = t
+            table_src.append(i)
+        bl_to_table.append(t)
+    return bl_to_table, table_src
+
+
+# =============================================================================
 # MESH (.gs) — BLENDER OBJECT CREATION
 # =============================================================================
 #
@@ -4415,6 +4559,8 @@ def create_blender_mesh(name, mesh_data, tpl_path='', merge_materials=False):
         'used_composite':   mesh_data.get('used_composite', False),
         'composite_offset': mesh_data.get('composite_offset', 0),
         'composite_shift':  mesh_data.get('composite_shift', CB_DEFAULT_SHIFT),
+        'composite_regular_offset': mesh_data.get('composite_regular_offset', 0),   # v0.34.1
+        'composite_regular_count':  mesh_data.get('composite_regular_count', 0),
         'uv_offset':        mesh_data.get('uv_offset', 0),
         'uv_count':         mesh_data.get('uv_count', 0),
         'uv_scale':         mesh_data.get('uv_scale', 1),
@@ -4506,6 +4652,14 @@ def create_blender_mesh(name, mesh_data, tpl_path='', merge_materials=False):
     mesh.from_pydata(vertices, [], faces)
     mesh.update()
 
+    # v0.34.0: remember which file-table vertex each Blender vertex stands for
+    _vorigin = mesh_data.get('vertex_origin')
+    if _vorigin and len(_vorigin) == len(mesh.vertices):
+        gs_set_orig_vertex_attribute(mesh, _vorigin)
+        obj['gs_orig_vertex_count'] = int(mesh_data.get('vertex_count', 0))
+        print(f"  [v0.34.0] {len(mesh.vertices) - obj['gs_orig_vertex_count']} extra vertices "
+              f"(one per additional bone a table vertex is drawn under)")
+
     n_faces_before   = len(mesh.polygons)
     validate_changed = mesh.validate(verbose=False)
     n_faces_after    = len(mesh.polygons)
@@ -4560,6 +4714,8 @@ def create_blender_mesh(name, mesh_data, tpl_path='', merge_materials=False):
         if 'fe_original_material_name' not in mat:
             mat['fe_original_material_name'] = mat_name
             mat['fe_material_slot'] = mat_slot
+        if 'fe_render_pass' not in mat:      # v0.34.5: draw list the game material was rendered in (0 opaque, 1 alpha-tested, 2 blended)
+            mat['fe_render_pass'] = int(mat_info.get('render_pass', 0))
 
         rgba = mat_info.get('diffuse_rgba', [204, 204, 204, 255])
         if is_new and hasattr(mat, 'diffuse_color') and len(rgba) >= 4:
@@ -4612,6 +4768,9 @@ def create_blender_mesh(name, mesh_data, tpl_path='', merge_materials=False):
     # (i.e. new geometry added by the user).
     chunk_attr = mesh.attributes.new(name="fe_chunk_index",
                                      type='INT', domain='FACE')
+    # v0.34.6: 1 on faces whose source chunk used colour indices (a coloured chunk), 0 otherwise
+    color_attr = mesh.attributes.new(name="fe_chunk_color", type='INT', domain='FACE')
+    _chunk_has_color = mesh_data.get('chunk_has_color', [])
 
     # Per-loop UV index list — built during the polygon loop below and stored
     # as a mesh custom property.  This replaces the old gs_original_data entry
@@ -4648,6 +4807,8 @@ def create_blender_mesh(name, mesh_data, tpl_path='', merge_materials=False):
         # faces is distinguishable from chunk 0 (stored as 1).
         # Decode at export: stored_value - 1 = real ci (-1 = unclaimed/new).
         chunk_attr.data[poly.index].value = ci + 1  # -1 → 0, 0 → 1, N-1 → N
+        if 0 <= ci < len(_chunk_has_color) and _chunk_has_color[ci]:
+            color_attr.data[poly.index].value = 1
 
         # Material index
         if game_materials:
@@ -4715,8 +4876,10 @@ def create_blender_mesh(name, mesh_data, tpl_path='', merge_materials=False):
 # MESH (.gs) — SKINNING
 # =============================================================================
 
-def apply_skin_weights(mesh_obj, armature_obj, skin_weights, bones):
-    """Assign vertex groups and add an Armature modifier to *mesh_obj*."""
+def apply_skin_weights(mesh_obj, armature_obj, skin_weights, bones, skin_multi=None):
+    """Assign vertex groups and add an Armature modifier to *mesh_obj*.
+    v0.34.2: *skin_multi* {vertex: [(bone_id, weight), ...]} gives vertices several weighted bones
+    (blended composite vertices); every other vertex in *skin_weights* gets its one bone at 1.0."""
     if not skin_weights:
         print("  apply_skin_weights: no skin data — skipping")
         return
@@ -4727,9 +4890,17 @@ def apply_skin_weights(mesh_obj, armature_obj, skin_weights, bones):
         if idx is not None:
             bone_name_by_id[int(idx)] = bone.name
 
+    skin_multi = skin_multi or {}
     verts_for_bone = defaultdict(list)
+    weighted = defaultdict(lambda: defaultdict(list))     # bone_id -> weight -> [vertex]
     for vi, bone_id in skin_weights.items():
-        verts_for_bone[bone_id].append(vi)
+        if vi in skin_multi:
+            for b_, w_ in skin_multi[vi]:
+                verts_for_bone[b_].append(vi)
+                weighted[b_][w_].append(vi)
+        else:
+            verts_for_bone[bone_id].append(vi)
+            weighted[bone_id][1.0].append(vi)
 
     groups_created = 0
     verts_assigned = 0
@@ -4742,7 +4913,8 @@ def apply_skin_weights(mesh_obj, armature_obj, skin_weights, bones):
         vg = mesh_obj.vertex_groups.get(bone_name)
         if vg is None:
             vg = mesh_obj.vertex_groups.new(name=bone_name)
-        vg.add(vert_list, 1.0, 'REPLACE')
+        for w_, vl_ in weighted[bone_id].items():
+            vg.add(vl_, w_, 'REPLACE')
         groups_created += 1
         verts_assigned += len(vert_list)
         
@@ -5031,6 +5203,689 @@ def export_gs_file(mesh_obj, filepath):
 
 
 # =============================================================================
+# MESH (.gs) — COMPOSITE (BLENDED) EXPORT   (v0.34.3)
+# =============================================================================
+#
+# Rebuilds a composite (zu / zmap) body from the Blender mesh.  Scope of v0.34.3: every chunk, material,
+# TPL block, PtrA name and string comes from the ORIGINAL file; what is rebuilt from Blender is
+#   - the composite buffer (weight records + 12-byte vertex slots) from the vertex groups,
+#   - the regular position / normal tables used by chunks WITHOUT format bit 0,
+#   - the UV table and every display list (greedy triangle strips), keeping the draw lists
+#     (0x5C / 0x60 / 0x64) the chunks were in,
+#   - the PtrA records (original bounds kept unless a vertex left them), header counts, AABB,
+#     relocation table.
+# Not supported yet: new faces / new chunks / addon meshes, chunks with skinning bytes, colour
+# indices or second UVs, GX-cache (palette) chunks, material or name changes.
+#
+# Layout facts (kniaUt_ax, strong evidence): weight record 0x18 bytes = bones[4] int16, weights[4] uint8
+# (sum 256, zeros for one-bone records), block offset u32 (32-aligned), block size u16 =
+# ceil((first vertex + 12 * vertex count) / 32) * 32 (max 4096), first vertex u8 = (-block offset) mod 12,
+# bone count u8, vertex count u16, binormal count u16 (0).  The vertex data starts at the next 32-byte
+# boundary after the records; slot = (block offset + first vertex) // 12; the DL normal index = slot.
+
+def gs_pack_weights(pairs, max_bones=4):
+    """[(bone_id, weight)] -> (bones4, weights4) as stored in a weight record, or None when empty.
+    Keeps the heaviest bones, scales to 256 and fixes rounding on the heaviest one.  A single bone
+    is stored with weights (0, 0, 0, 0)."""
+    pairs = [(int(b), float(w)) for b, w in pairs if w > 1e-6]
+    if not pairs:
+        return None
+    pairs.sort(key=lambda p: (-p[1], p[0]))
+    pairs = pairs[:max_bones]
+    tot = sum(w for _, w in pairs)
+    q = [int(round(w / tot * 256.0)) for _, w in pairs]
+    q[0] += 256 - sum(q)
+    keep = [(b, w) for (b, _), w in zip(pairs, q) if w > 0]
+    if len(keep) == 1:
+        return ((keep[0][0], -1, -1, -1), (0, 0, 0, 0))
+    bones = tuple([b for b, _ in keep] + [-1] * (4 - len(keep)))
+    wts = tuple([w for _, w in keep] + [0] * (4 - len(keep)))
+    return (bones, wts)
+
+
+def gs_composite_buffer(items, shift):
+    """items: [(sig, pos3, nrm3)] in slot-preference order (sig from gs_pack_weights, pos3 / nrm3 =
+    int16 triples).  Consecutive items with the same sig share a record.
+    Returns (bytes, slot_of_item, n_records)."""
+    n = len(items)
+    recs, slot_of = [], [0] * n
+    cursor, i = 0, 0
+    while i < n:
+        sig = items[i][0]
+        blk = cursor
+        fv = (-blk) % 12
+        maxvc = (4096 - fv) // 12
+        j = i
+        while j < n and items[j][0] == sig and j - i < maxvc:
+            j += 1
+        vc = j - i
+        bsz = -(-(fv + 12 * vc) // 32) * 32
+        s0 = (blk + fv) // 12
+        for k in range(vc):
+            slot_of[i + k] = s0 + k
+        recs.append((sig, blk, bsz, fv, vc))
+        cursor += bsz
+        i = j
+    nvert = -(-cursor // 12)
+    ov = -(-(0x10 + 24 * len(recs)) // 32) * 32
+    out = bytearray(ov + 12 * nvert)
+    multi = sum(1 for r in recs if r[4] > 1)
+    struct.pack_into('>IIHHBBH', out, 0, 0x10, ov, len(recs), nvert, shift, 0, multi)
+    for ri, (sig, blk, bsz, fv, vc) in enumerate(recs):
+        nb = sum(1 for b in sig[0] if b >= 0)
+        struct.pack_into('>4h4BIHBBHH', out, 0x10 + 24 * ri, *sig[0], *sig[1], blk, bsz, fv, nb, vc, 0)
+    for (sig, pos, nrm), s in zip(items, slot_of):
+        struct.pack_into('>6h', out, ov + 12 * s, *pos, *nrm)
+    return bytes(out), slot_of, len(recs)
+
+
+def gs_build_strips(faces, max_len=900):
+    """faces: list of 3-tuples of vertex keys (position index first).  Greedy triangle strips with the
+    same rules as the ymu exporter (a key = position + normal + UV index, so UV seams break strips)."""
+    edge_face = {}
+    for fi, f in enumerate(faces):
+        for i in range(3):
+            edge_face[(f[i], f[(i + 1) % 3])] = fi
+    visited, strips = set(), []
+    for fi, verts in enumerate(faces):
+        if fi in visited:
+            continue
+        best, best_vis = None, None
+        for rot in range(3):
+            strip = [verts[rot], verts[(rot + 1) % 3], verts[(rot + 2) % 3]]
+            temp = {fi}
+            while len(strip) < max_len:
+                key = (strip[-1], strip[-2]) if len(strip) % 2 == 1 else (strip[-2], strip[-1])
+                nf = edge_face.get(key)
+                if nf is None or nf in visited or nf in temp:
+                    break
+                shared = {strip[-2][0], strip[-1][0]}
+                cands = [v for v in faces[nf] if v[0] not in shared]
+                if len(cands) != 1:
+                    break
+                strip.append(cands[0])
+                temp.add(nf)
+            if best is None or len(strip) > len(best):
+                best, best_vis = strip, temp
+        visited.update(best_vis)
+        strips.append(best)
+    return strips
+
+
+def gs_write_composite(raw_orig, data, log=print):
+    """Pure writer.  raw_orig: bytes of the ORIGINAL .gs.  data:
+       {'verts': [{'co': (x,y,z), 'nrm': (x,y,z), 'w': [(bone_id, weight), ...]}] indexed by Blender vertex,
+        'chunks': [[(v0, v1, v2, (uv0, uv1, uv2)), ...] per ORIGINAL chunk]}   (uv = Blender (u, v) floats)
+    Returns (bytes, info dict); raises ValueError for unsupported input."""
+    B = 0x20
+    u4 = lambda o: struct.unpack_from('>I', raw_orig, o)[0]
+    u2 = lambda o: struct.unpack_from('>H', raw_orig, o)[0]
+    nums = [u2(0x6C + 2 * i) for i in range(8)]
+    n_mats, n_ptra_o, n_chunks_o = nums[4], nums[5], nums[6]
+    color_mode = data.get('color_mode', 'BLENDER')          # v0.34.6: 'BLENDER' / 'WHITE' / 'NONE'
+    vexp, nexp, uexp = raw_orig[0x7C], raw_orig[0x7D], raw_orig[0x7E]
+    vscale, nscale, uscale = 1 << vexp, 1 << nexp, 1 << uexp
+    cb_ptr = u4(0x68)
+    if not cb_ptr:
+        raise ValueError("no composite buffer in this file")
+    cb_o = cb_ptr + B
+    shift = raw_orig[cb_o + 0x0C]
+
+    # ── original chunks, in file order, with their draw list ──────────────────────────────────────────────
+    chunks = []
+    for lid, hoff in enumerate((0x5C, 0x60, 0x64)):
+        a = u4(hoff)
+        seen = set()
+        while a and a + B not in seen:
+            seen.add(a + B)
+            chunks.append({'list': lid, 'addr': a + B})
+            a = u4(a + B + 4)
+    if len(chunks) != n_chunks_o:
+        raise ValueError(f"draw lists hold {len(chunks)} chunks, header says {n_chunks_o}")
+    first = min(c['addr'] for c in chunks)
+    if [c['addr'] for c in chunks] != [first + 32 * i for i in range(len(chunks))]:
+        raise ValueError("chunk records are not contiguous in list order; not supported")
+    if len(data['chunks']) != len(chunks):
+        raise ValueError("data holds %d chunks, the file has %d" % (len(data['chunks']), len(chunks)))
+    for ci, c in enumerate(chunks):
+        p = c['addr']
+        c['rec'] = bytes(raw_orig[p:p + 32])
+        c['fmt'] = u2(p + 8)
+        c['f2'] = raw_orig[p + 0x12]
+        c['ptra'] = u4(p) + B
+        c['cb'] = bool(c['fmt'] & 1)
+        c['hc'] = bool(c['f2'] & 0x10)
+        if c['fmt'] & 2 or c['f2'] & 0x80 or u4(p + 0x1C):
+            raise ValueError(f"chunk {ci} uses skinning bytes, second-UV indices or a GX cache; not supported yet")
+        c['faces'] = data['chunks'][ci]
+    active = [c for c in chunks if c['faces']]
+    mat_o0 = u4(0x54) + B
+    orig_mat_names, tpl_max = {}, -1
+    for mi in range(n_mats):
+        me0 = mat_o0 + 32 * mi
+        npo = u4(me0) + B
+        orig_mat_names.setdefault(bytes(raw_orig[npo:raw_orig.index(0, npo)]).decode('ascii', 'replace'), mi)
+        t0 = u4(me0 + 0x14)
+        for k in range(raw_orig[me0 + 6] if t0 else 0):
+            tpl_max = max(tpl_max, raw_orig[t0 + B + 28 * k + 5])
+    # v0.34.5: addon chunks (data['addons']): new chunk records copied from a template chunk
+    new_mats = []                      # materials added after the original ones
+    for ai, a in enumerate(data.get('addons') or []):
+        mname = a['mat']['name']
+        if mname in orig_mat_names:
+            midx = orig_mat_names[mname]
+        else:
+            names_ = [m_['name'] for m_ in new_mats]
+            if mname not in names_:
+                new_mats.append(dict(a['mat']))
+                names_.append(mname)
+            midx = n_mats + names_.index(mname)
+        if midx > 255:
+            raise ValueError("more than 256 materials")
+        lid = int(a['list'])
+        tmpl = next((c for c in chunks if c['cb'] == a['cb'] and not c['fmt'] & 0x400), None) \
+            or next((c for c in chunks if not c['fmt'] & 0x400), chunks[0])
+        fmt = (0x2000 * (lid + 1)) | 0x1800 | (1 if a['cb'] else 0)       # render pass, double-sided, composite bit
+        rec = bytearray(tmpl['rec'])
+        struct.pack_into('>H', rec, 8, fmt)
+        rec[11] = midx
+        struct.pack_into('>H', rec, 12, a['bone'] & 0xFFFF)
+        active.append({'list': lid, 'new': True, 'cb': bool(a['cb']), 'hc': bool(a.get('color')), 'faces': a['faces'], 'rec': rec, 'fmt': fmt,
+                       'bone': a['bone'], 'ptra': ('new', ai), 'mat': midx})
+    active.sort(key=lambda c: c['list'])           # stable: original order kept, addon chunks last in their list
+    # v0.34.6: a chunk that inherits the material state (low bits 0x0C) needs a leader of the same material just before
+    # it in its list; if the leader was dropped, the chunk becomes the leader itself
+    n_leader_fix, prev = 0, None
+    for c in active:
+        if prev is not None and prev['list'] != c['list']:
+            prev = None
+        if c['fmt'] & 0x0C and (prev is None or prev['rec'][11] != c['rec'][11]):
+            c['fmt'] &= ~0x0C
+            c['rec'] = bytearray(c['rec'])
+            struct.pack_into('>H', c['rec'], 8, c['fmt'])
+            n_leader_fix += 1
+        prev = c
+    if not active:
+        raise ValueError("no faces left to export")
+
+    # ── vertices used per table ────────────────────────────────────────────────────────────────────────────────
+    V = data['verts']
+    comp_used = sorted({v for c in active if c['cb'] for f in c['faces'] for v in f[:3]})
+    reg_used = sorted({v for c in active if not c['cb'] for f in c['faces'] for v in f[:3]})
+    nrm_max = lambda ids: max([abs(x) for i in ids for x in V[i]['nrm']] or [0.0])
+    pos_max = lambda ids: max([abs(x) for i in ids for x in V[i]['co']] or [0.0])
+
+    def fit(exp, mx, what):
+        while exp > 0 and mx * (1 << exp) > 32767:
+            exp -= 1
+        return exp
+    # v0.34.4: find the vertices that still sit where the original file had them (their original
+    # normals are written back; only the others count when the PtrA bounds / header AABB may grow)
+    shift0 = shift
+    ov_o = u4(cb_o + 4)
+    nv_o = u2(cb_o + 0x0A)
+    reg_o = (u4(0x44) + B) if u4(0x44) else 0
+    n_reg_o = nums[0]
+    def quant(co, scale):
+        return tuple(max(-32768, min(32767, int(round(x * scale)))) for x in co)
+    orig_nrm, changed = {}, set()
+    for v in comp_used + reg_used:
+        o = V[v].get('orig', -1)
+        same = False
+        if 0 <= o < nv_o:
+            p = struct.unpack_from('>6h', raw_orig, cb_o + ov_o + 12 * o)
+            same = quant(V[v]['co'], 1 << shift0) == p[:3]
+            if same:
+                orig_nrm[v] = p[3:]
+        elif reg_o and nv_o <= o < nv_o + n_reg_o:
+            p = struct.unpack_from('>3h', raw_orig, reg_o + 6 * (o - nv_o))
+            same = quant(V[v]['co'], vscale) == p
+        if not same:
+            changed.add(v)
+    new_shift = fit(shift, pos_max(comp_used), 'composite')
+    if new_shift != shift:
+        log(f"  [CB] WARNING: coordinates do not fit int16 at shift {shift}; using shift {new_shift}")
+        shift = new_shift
+    new_vexp = fit(vexp, pos_max(reg_used), 'regular')
+    if new_vexp != vexp:
+        log(f"  [CB] WARNING: regular positions do not fit at exponent {vexp}; using {new_vexp}")
+        vexp, vscale = new_vexp, 1 << new_vexp
+    cs = 1 << shift
+    q16 = lambda x: max(-32768, min(32767, int(round(x))))
+
+    # ── composite buffer ───────────────────────────────────────────────────────────────────────────────────────
+    chunk_of_vertex = {}
+    for c in active:
+        if c['cb']:
+            for f in c['faces']:
+                for v in f[:3]:
+                    chunk_of_vertex.setdefault(v, c)
+    items, n_fallback = [], 0
+    n_unw = sum(1 for v in comp_used if gs_pack_weights(V[v]['w']) is None and chunk_of_vertex[v].get('new'))
+    if n_unw:
+        raise ValueError(f"{n_unw} addon vertices have no vertex-group weight for a bone of the armature")
+    for v in comp_used:
+        sig = gs_pack_weights(V[v]['w'])
+        if sig is None:                                 # unweighted: fall back to the chunk's own bone
+            pb = u2(chunk_of_vertex[v]['ptra'] + 0x1C)
+            sig = ((pb, -1, -1, -1), (0, 0, 0, 0))
+            n_fallback += 1
+        co, nr = V[v]['co'], V[v]['nrm']
+        if v in orig_nrm:        # unchanged vertex: original normal (rescaled only if the shift changed)
+            nq = tuple(q16(x * 2.0 ** (shift - shift0)) for x in orig_nrm[v])
+        else:                    # edited / new vertex: Blender's normal points the other way (winding), so negate it
+            nq = tuple(q16(-x * cs) for x in nr)
+        items.append((sig, tuple(q16(x * cs) for x in co), nq))
+    comp_bytes, slots, n_rec = gs_composite_buffer(items, shift)
+    slot_of = dict(zip(comp_used, slots))
+    n_slots = (len(comp_bytes) - struct.unpack_from('>I', comp_bytes, 4)[0]) // 12
+    if n_slots > 65535 or n_rec > 65535:
+        raise ValueError("too many composite slots / records for 16-bit counts")
+    if n_fallback:
+        log(f"  [CB] WARNING: {n_fallback} vertices had no bone weights; they follow their chunk's bone")
+
+    # ── regular tables (chunks without bit 0) ──────────────────────────────────────────────────────────────────
+    reg_idx = {v: i for i, v in enumerate(reg_used)}
+    pos_bytes = bytearray()
+    for v in reg_used:
+        pos_bytes += struct.pack('>hhh', *(q16(x * vscale) for x in V[v]['co']))
+    nrm_table, nrm_key, reg_nrm = [], {}, {}
+    for v in reg_used:
+        k = tuple(max(-128, min(127, int(round(x * nscale)))) for x in V[v]['nrm'])
+        if k not in nrm_key:
+            nrm_key[k] = len(nrm_table)
+            nrm_table.append(k)
+        reg_nrm[v] = nrm_key[k]
+    nrm_bytes = bytearray()
+    for k in nrm_table:
+        nrm_bytes += struct.pack('>bbb', *k)
+    pos_pad = (4 - len(pos_bytes) % 4) % 4
+    nrm_bytes += b'\0' * ((4 - len(nrm_bytes) % 4) % 4)
+
+    # ── UV table + display lists ───────────────────────────────────────────────────────────────────────────────
+    uv_table, uv_key = [], {}
+    def uv_index(uv):
+        k = (q16(uv[0] * uscale), q16((1.0 - uv[1]) * uscale))
+        i = uv_key.get(k)
+        if i is None:
+            i = uv_key[k] = len(uv_table)
+            uv_table.append(k)
+        return i
+    col_table, col_key = [], {}
+    def col_index(rgba):
+        k = tuple(int(max(0, min(255, x))) for x in rgba)
+        i = col_key.get(k)
+        if i is None:
+            i = col_key[k] = len(col_table)
+            col_table.append(k)
+        return i
+    for c in active:
+        faces = []
+        use_col = c['hc'] and color_mode != 'NONE'          # v0.34.6
+        if not isinstance(c['rec'], bytearray):
+            c['rec'] = bytearray(c['rec'])
+        c['rec'][0x12] = (c['rec'][0x12] | 0x10) if use_col else (c['rec'][0x12] & ~0x10 & 0xFF)
+        for f in c['faces']:
+            v0, v1, v2, uvs = f[:4]
+            cols = f[4] if len(f) > 4 else None
+            if v0 == v1 or v1 == v2 or v0 == v2:
+                continue
+            keys = []
+            for k_, (v, uv) in enumerate(zip((v0, v1, v2), uvs)):
+                key = ((slot_of[v], slot_of[v], uv_index(uv)) if c['cb'] else (reg_idx[v], reg_nrm[v], uv_index(uv)))
+                if use_col:
+                    rgba = (255, 255, 255, 255) if (color_mode == 'WHITE' or cols is None) else cols[k_]
+                    key = key + (col_index(rgba),)
+                keys.append(key)
+            faces.append(tuple(keys))
+        dl = bytearray()
+        for strip in gs_build_strips(faces):
+            dl += b'\x98' + struct.pack('>H', len(strip))
+            for key in strip:
+                if use_col:
+                    dl += struct.pack('>HHHH', key[0], key[1], key[3], key[2])     # position, normal, colour, UV
+                else:
+                    dl += struct.pack('>HHH', key[0], key[1], key[2])
+        dl += b'\0' * ((32 - len(dl) % 32) % 32)
+        c['dl'] = bytes(dl)
+        c['n_faces'] = len(faces)
+    if len(uv_table) > 65535:
+        raise ValueError("more than 65535 UV entries")
+    uv_bytes = b''.join(struct.pack('>hh', *k) for k in uv_table)
+    col_bytes = b''.join(bytes(k) for k in col_table)
+    if len(col_table) > 65535:
+        raise ValueError("more than 65535 colour entries")
+
+    # ── PtrA records (original order, only those still used) ──────────────────────────────────────────────────
+    ptra_addrs = sorted({c['ptra'] for c in active if not c.get('new')}) + [c['ptra'] for c in active if c.get('new')]
+    ptra_chunks = {a: [c for c in active if c['ptra'] == a] for a in ptra_addrs}
+    ptra_out = []
+    base_name_raw = u4(ptra_addrs[0]) if not isinstance(ptra_addrs[0], tuple) else u4(sorted(c['ptra'] for c in chunks)[0])
+    for a in ptra_addrs:
+        if isinstance(a, tuple):                           # v0.34.5: PtrA of an addon chunk
+            c0 = ptra_chunks[a][0]
+            ids0 = {v for f in c0['faces'] for v in f[:3]}
+            tail = bytearray(32)
+            struct.pack_into('>3f', tail, 0, *[min(V[v]['co'][k] for v in ids0) for k in range(3)])
+            struct.pack_into('>3f', tail, 12, *[max(V[v]['co'][k] for v in ids0) for k in range(3)])
+            struct.pack_into('>H', tail, 24, c0['bone'] & 0xFFFF)
+            ptra_out.append((base_name_raw, bytes(tail)))
+            continue
+        tail = bytearray(raw_orig[a + 4:a + 36])
+        lo = list(struct.unpack_from('>3f', tail, 0))
+        hi = list(struct.unpack_from('>3f', tail, 12))
+        ids = set()
+        for c in ptra_chunks[a]:
+            ids |= {v for f in c['faces'] for v in f[:3]}
+        grown = False
+        for v in ids & changed:
+            for k, x in enumerate(V[v]['co']):
+                if x < lo[k] - 1e-3:
+                    lo[k], grown = x, True
+                if x > hi[k] + 1e-3:
+                    hi[k], grown = x, True
+        if grown:
+            struct.pack_into('>3f', tail, 0, *lo)
+            struct.pack_into('>3f', tail, 12, *hi)
+        ptra_out.append((u4(a), bytes(tail)))
+
+    # ── materials, TPL blocks, string pool (all verbatim) ──────────────────────────────────────────────────────
+    mat_o = u4(0x54) + B
+    mats, name_ptrs = [], [u4(0x20)]
+    for mi in range(n_mats):
+        me = bytearray(raw_orig[mat_o + 32 * mi:mat_o + 32 * mi + 32])
+        tex = me[6]
+        tpl_o = struct.unpack_from('>I', me, 0x14)[0]
+        blocks = bytes(raw_orig[tpl_o + B:tpl_o + B + 28 * tex]) if tpl_o else b''
+        mats.append((me, blocks))
+        name_ptrs.append(struct.unpack_from('>I', me, 0)[0])
+    name_ptrs += [p[0] for p in ptra_out]
+    pool_start = min(p for p in name_ptrs if p) + B
+    reloc_o = u4(4) + B
+    pool = bytes(raw_orig[pool_start:reloc_o])
+    # v0.34.5: new materials (entry + one TPL block each; the image itself is added to the .tpl by the User)
+    tpl_next = tpl_max + 1
+    for m_ in new_mats:
+        npos = len(pool)
+        pool += m_['name'].encode('ascii', 'replace') + b'\0'
+        e_ = bytearray(32)
+        struct.pack_into('>I', e_, 0, (pool_start - B) + npos)
+        e_[6] = 1
+        e_[8:12] = bytes(m_['diff'])
+        e_[12:16] = bytes(m_['spec'])
+        blk = bytearray(28)
+        blk[1], blk[5], blk[6], blk[7] = 1, tpl_next & 0xFF, 1, 1
+        struct.pack_into('>ff', blk, 16, 1.0, 1.0)
+        m_['tpl_index'] = tpl_next
+        tpl_next += 1
+        mats.append((e_, bytes(blk)))
+    n_mats = len(mats)
+
+    # ── layout ─────────────────────────────────────────────────────────────────────────────────────────────────
+    HEADER = 0x84
+    pos_off = HEADER
+    nrm_off = pos_off + len(pos_bytes) + pos_pad
+    uv_off = nrm_off + len(nrm_bytes)
+    col_off = uv_off + len(uv_bytes)
+    mat_off = col_off + len(col_bytes)
+    tpl_off = mat_off + 32 * n_mats
+    ptra_off = tpl_off + sum(len(b) for _, b in mats)
+    chunk_off = ptra_off + 36 * len(ptra_out)
+    cur = chunk_off + 32 * len(active)
+    cur += (32 - cur % 32) % 32
+    dl_off = []
+    for c in active:
+        dl_off.append(cur)
+        cur += len(c['dl'])
+    cb_off = cur
+    pool_off = cb_off + len(comp_bytes)
+    reloc_off = pool_off + len(pool)
+    reloc_off += (4 - reloc_off % 4) % 4
+
+    reloc = []
+    out = bytearray(raw_orig[:HEADER])
+    def set_ptr(off, target):
+        struct.pack_into('>I', out, off, (target - B) if target else 0)
+        if target:
+            reloc.append((off, target - B))
+    set_ptr(0x20, (pool_off + (u4(0x20) + B - pool_start)) if u4(0x20) else 0)
+    struct.pack_into('>I', out, 0x50, 0)
+    set_ptr(0x44, pos_off if reg_used else 0)
+    set_ptr(0x48, nrm_off if reg_used else 0)
+    set_ptr(0x4C, uv_off)
+    if col_table:
+        set_ptr(0x50, col_off)
+    set_ptr(0x54, mat_off)
+    set_ptr(0x58, ptra_off)
+    for lid, hoff in enumerate((0x5C, 0x60, 0x64)):
+        idx = [i for i, c in enumerate(active) if c['list'] == lid]
+        set_ptr(hoff, chunk_off + 32 * idx[0] if idx else 0)
+    set_ptr(0x68, cb_off)
+    ab0 = struct.unpack_from('>6f', raw_orig, 0x2C)      # v0.34.4: original box, grown only by edited vertices
+    lo = [min([ab0[k]] + [V[i]['co'][k] for i in changed]) for k in range(3)]
+    hi = [max([ab0[3 + k]] + [V[i]['co'][k] for i in changed]) for k in range(3)]
+    struct.pack_into('>6f', out, 0x2C, *lo, *hi)
+    struct.pack_into('>HHHHHHH', out, 0x6C, len(reg_used), len(nrm_table) if reg_used else 0, len(uv_table),
+                     len(col_table), n_mats, len(ptra_out), len(active))
+    out[0x7C:0x7F] = bytes([vexp, nexp, uexp])
+
+    if reg_used:
+        out += pos_bytes + b'\0' * pos_pad + nrm_bytes
+    out += uv_bytes
+    out += col_bytes
+    tpl_cur = tpl_off
+    pool_rel = lambda raw_ptr: pool_off + (raw_ptr + B - pool_start)
+    for mi, (me, blocks) in enumerate(mats):
+        e = bytearray(me)
+        name_raw = struct.unpack_from('>I', e, 0)[0]
+        struct.pack_into('>I', e, 0, pool_rel(name_raw) - B)
+        reloc.append((mat_off + 32 * mi, pool_rel(name_raw) - B))
+        if blocks:
+            struct.pack_into('>I', e, 0x14, tpl_cur - B)
+            reloc.append((mat_off + 32 * mi + 0x14, tpl_cur - B))
+            tpl_cur += len(blocks)
+        out += e
+    for _, blocks in mats:
+        out += blocks
+    for pi, (name_raw, tail) in enumerate(ptra_out):
+        out += struct.pack('>I', pool_rel(name_raw) - B) + tail
+        reloc.append((ptra_off + 36 * pi, pool_rel(name_raw) - B))
+    ptra_index = {a: i for i, a in enumerate(ptra_addrs)}
+    for i, c in enumerate(active):
+        rec = bytearray(c['rec'])
+        p = chunk_off + 32 * i
+        nxt = chunk_off + 32 * (i + 1) if i + 1 < len(active) and active[i + 1]['list'] == c['list'] else 0
+        struct.pack_into('>I', rec, 0, ptra_off + 36 * ptra_index[c['ptra']] - B)
+        struct.pack_into('>I', rec, 4, nxt - B if nxt else 0)
+        struct.pack_into('>I', rec, 0x14, dl_off[i] - B)
+        struct.pack_into('>I', rec, 0x18, len(c['dl']))
+        struct.pack_into('>I', rec, 0x1C, 0)
+        reloc.append((p, ptra_off + 36 * ptra_index[c['ptra']] - B))
+        if nxt:
+            reloc.append((p + 4, nxt - B))
+        reloc.append((p + 0x14, dl_off[i] - B))
+        out += rec
+    out += b'\0' * ((32 - len(out) % 32) % 32)
+    for c in active:
+        out += c['dl']
+    assert len(out) == cb_off, (len(out), cb_off)
+    out += comp_bytes + pool
+    out += b'\0' * (reloc_off - len(out))
+    entries = sorted(f - B for f, _ in reloc)
+    struct.pack_into('>I', out, 0x04, reloc_off - B)
+    struct.pack_into('>I', out, 0x08, len(entries))
+    out += b''.join(struct.pack('>I', e) for e in entries)
+    struct.pack_into('>I', out, 0, len(out))
+    info = {'chunks': len(active), 'dropped_chunks': len(chunks) - sum(1 for c in active if not c.get('new')),
+            'addon_chunks': sum(1 for c in active if c.get('new')),
+            'colours': len(col_table), 'coloured_chunks': sum(1 for c in active if c['hc'] and color_mode != 'NONE'),
+            'leader_fixes': n_leader_fix,
+            'new_materials': [(m_['name'], m_['tpl_index']) for m_ in new_mats], 'comp_slots': n_slots,
+            'records': n_rec, 'regular_vertices': len(reg_used), 'uvs': len(uv_table), 'reloc': len(entries),
+            'ptra': len(ptra_out), 'shift': shift, 'fallback': n_fallback, 'size': len(out),
+            'faces': sum(c['n_faces'] for c in active)}
+    return bytes(out), info
+
+
+def gs_corner_colors(mesh):
+    """v0.34.6: [rgba bytes per loop] from the 'Col' colour attribute (or the first colour attribute), or None."""
+    attr = mesh.color_attributes.get("Col")
+    if attr is None and len(mesh.color_attributes):
+        attr = mesh.color_attributes[0]
+    if attr is None:
+        return None
+    out = []
+    if attr.domain == 'CORNER':
+        for d in attr.data:
+            out.append(tuple(int(round(x * 255)) for x in d.color[:4]))
+    else:
+        by_vertex = [tuple(int(round(x * 255)) for x in d.color[:4]) for d in attr.data]
+        out = [by_vertex[l.vertex_index] for l in mesh.loops]
+    return out
+
+
+def gs_collect_addons(verts, addon_objs, chunk_mode='BLENDED', mat_name_mode='ORIGINAL'):
+    """v0.34.5: addon meshes -> chunk descriptions for gs_write_composite.  The addon vertices are APPENDED to
+    *verts* (indices continue after the main mesh).  One chunk per (mesh, material slot).
+    Returns (addons list, problems list)."""
+    addons, problems = [], []
+    for obj in addon_objs:
+        mesh = obj.data
+        arm = next((m.object for m in obj.modifiers if m.type == 'ARMATURE' and m.object), None)
+        if arm is None:
+            problems.append(f"addon '{obj.name}' needs an Armature modifier (the joined armature)")
+            continue
+        grp = {}
+        for vgi, vg in enumerate(obj.vertex_groups):
+            ab = arm.data.bones.get(vg.name)
+            if ab is not None and 'fe_bone_index' in ab:
+                grp[vgi] = int(ab['fe_bone_index'])
+        base = len(verts)
+        for v in mesh.vertices:
+            w = [(grp[g.group], g.weight) for g in v.groups if g.group in grp and g.weight > 0]
+            verts.append({'co': tuple(v.co), 'nrm': tuple(v.normal), 'w': w, 'orig': -1})
+        uvl = mesh.uv_layers.active
+        loop_cols = gs_corner_colors(mesh)
+        flag_attr = mesh.attributes.get('fe_chunk_color')
+        by_slot, n_quad, slot_color = {}, 0, {}
+        for poly in mesh.polygons:
+            if len(poly.vertices) != 3:
+                n_quad += 1
+                continue
+            uvs = tuple(tuple(uvl.data[li].uv) if uvl is not None else (0.0, 0.0) for li in poly.loop_indices)
+            cols = tuple(loop_cols[li] for li in poly.loop_indices) if loop_cols is not None else None
+            by_slot.setdefault(poly.material_index, []).append(
+                (base + poly.vertices[0], base + poly.vertices[1], base + poly.vertices[2], uvs, cols))
+            # coloured chunk: faces flagged at import, or any non-white corner colour
+            if (flag_attr is not None and flag_attr.data[poly.index].value) or \
+                    (cols is not None and any(c_ != (255, 255, 255, 255) for c_ in cols)):
+                slot_color[poly.material_index] = True
+        if n_quad:
+            problems.append(f"addon '{obj.name}': {n_quad} face(s) are not triangles; triangulate it first")
+        for slot, faces in sorted(by_slot.items()):
+            mat = mesh.materials[slot] if slot < len(mesh.materials) else None
+            used = {v for f in faces for v in f[:3]}
+            n_unw = sum(1 for v in used if not verts[v]['w'])
+            if n_unw:
+                problems.append(f"addon '{obj.name}': {n_unw} vertices have no vertex-group weight for a bone of the armature")
+                continue
+            tot = Counter()
+            for v in used:
+                for b_, w_ in verts[v]['w']:
+                    tot[b_] += w_
+            dc = getattr(mat, 'diffuse_color', None)
+            diff = [max(0, min(255, round(c * 255))) for c in dc[:4]] if dc is not None else [204, 204, 204, 255]
+            addons.append({'mat': {'name': fe_material_export_name(mat, mat_name_mode, 'addon_material'),
+                                   'diff': diff, 'spec': [0, 0, 0, 255]},
+                           'list': int(mat.get('fe_render_pass', 0)) if mat is not None else 0,
+                           'cb': chunk_mode != 'SINGLE', 'bone': tot.most_common(1)[0][0], 'faces': faces,
+                           'color': bool(slot_color.get(slot))})
+    return addons, problems
+
+
+def gs_collect_composite(mesh_obj, gs, addon_objs=None, chunk_mode='BLENDED', mat_name_mode='ORIGINAL'):
+    """Blender mesh -> plain data for gs_write_composite.  Returns (data, problems list)."""
+    mesh = mesh_obj.data
+    arm = None
+    for mod in mesh_obj.modifiers:
+        if mod.type == 'ARMATURE' and mod.object:
+            arm = mod.object
+            break
+    bone_of_group = {}
+    if arm is not None:
+        for vgi, vg in enumerate(mesh_obj.vertex_groups):
+            ab = arm.data.bones.get(vg.name)
+            if ab is not None and 'fe_bone_index' in ab:
+                bone_of_group[vgi] = int(ab['fe_bone_index'])
+    verts = []
+    origins = gs_vertex_origins(mesh) or [-1] * len(mesh.vertices)     # v0.34.4
+    for v in mesh.vertices:
+        w = [(bone_of_group[g.group], g.weight) for g in v.groups if g.group in bone_of_group]
+        verts.append({'co': tuple(v.co), 'nrm': tuple(v.normal), 'w': w, 'orig': origins[v.index]})
+    n_orig = len(gs.get('chunk_face_starts', []))
+    attr = mesh.attributes.get('fe_chunk_index')
+    orig_polys = mesh_obj.get('gs_orig_poly_count', None)
+    uvl = mesh.uv_layers.active
+    main_cols = gs_corner_colors(mesh)           # v0.34.6
+    chunks = [[] for _ in range(n_orig)]
+    problems = []
+    n_new = n_quad = 0
+    for poly in mesh.polygons:
+        if len(poly.vertices) != 3:
+            n_quad += 1
+            continue
+        ci = (attr.data[poly.index].value - 1) if attr is not None else -1
+        if (orig_polys is not None and poly.index >= orig_polys) or not 0 <= ci < n_orig:
+            n_new += 1
+            continue
+        uvs = tuple(tuple(uvl.data[li].uv) if uvl is not None else (0.0, 0.0) for li in poly.loop_indices)
+        cols = tuple(main_cols[li] for li in poly.loop_indices) if main_cols is not None else None
+        chunks[ci].append((poly.vertices[0], poly.vertices[1], poly.vertices[2], uvs, cols))
+    if n_quad:
+        problems.append(f"{n_quad} face(s) are not triangles; triangulate the mesh first")
+    if n_new:
+        problems.append(f"{n_new} new face(s) not belonging to an original chunk; adding geometry to composite bodies "
+                        f"is not supported yet")
+    if arm is None:
+        problems.append("the mesh needs an Armature modifier so the vertex groups can be turned into bone indices")
+    addons = []
+    if addon_objs:
+        addons, more = gs_collect_addons(verts, addon_objs, chunk_mode, mat_name_mode)
+        problems += more
+    return {'verts': verts, 'chunks': chunks, 'addons': addons}, problems
+
+
+def export_gs_composite(mesh_obj, filepath, addon_mesh_objs=None, addon_chunk_mode='BLENDED', mat_name_mode='ORIGINAL',
+                        color_mode='BLENDER'):
+    """Composite-body export (v0.34.3; addon meshes v0.34.5).  Returns (True, message) or (False, reason)."""
+    import json
+    gs = json.loads(str(mesh_obj.get('gs_original_data')))
+    raw_orig = bytes.fromhex(gs['file_data_hex'])
+    data, problems = gs_collect_composite(mesh_obj, gs, addon_mesh_objs, addon_chunk_mode, mat_name_mode)
+    if problems:
+        return False, "; ".join(problems)
+    data['color_mode'] = color_mode
+    try:
+        out, info = gs_write_composite(raw_orig, data)
+    except ValueError as e:
+        return False, str(e)
+    with open(filepath, 'wb') as f:
+        f.write(out)
+    print(f"\n=== EXPORTED .gs (COMPOSITE v0.34.3): {os.path.basename(filepath)} ===")
+    print(f"  {info['size']} bytes | {info['chunks']} chunks ({info['dropped_chunks']} empty chunk(s) dropped) | "
+          f"{info['faces']} faces | {info['comp_slots']} composite slots in {info['records']} records "
+          f"(shift {info['shift']}) | {info['regular_vertices']} regular vertices | {info['uvs']} UVs | "
+          f"{info['reloc']} reloc entries")
+    if info.get('coloured_chunks') or info.get('leader_fixes'):
+        print(f"  {info['coloured_chunks']} coloured chunk(s), {info['colours']} colour table entries; "
+              f"{info['leader_fixes']} chunk(s) promoted to material leader")
+    if info.get('addon_chunks'):
+        print(f"  {info['addon_chunks']} addon chunk(s); new materials (TPL image index to add): {info['new_materials']}")
+    return True, (f"{info['size']} bytes written (composite v0.34.5, {info['chunks']} chunks, "
+                  f"{info['comp_slots']} slots / {info['records']} records)")
+
+
+# =============================================================================
 # MESH (.gs) — FULL-REBUILD EXPORT
 # =============================================================================
 #
@@ -5074,7 +5929,7 @@ def export_gs_file(mesh_obj, filepath):
 #   [Relocation table   4 bytes × K entries, sorted ascending]
 
 def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BLENDER', append_new_bones=True,
-                           mat_name_mode='ORIGINAL'):
+                           mat_name_mode='ORIGINAL', addon_chunk_mode='BLENDED'):
     """Full-rebuild .gs exporter — v13.
 
     Drives chunk structure from vertex groups, rebuilds display lists and
@@ -5121,8 +5976,10 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
     # ── Early checks ─────────────────────────────────────────────────────────
 
     if gs.get('used_composite', False):
-        return False, ("Full rebuild is not yet supported for composite-vertex "
-                       "meshes.  Use the patch-in-place exporter instead.")
+        # v0.34.3: composite (blended) bodies have their own exporter
+        return export_gs_composite(mesh_obj, filepath, addon_mesh_objs=addon_mesh_objs,
+                                   addon_chunk_mode=addon_chunk_mode, mat_name_mode=mat_name_mode,
+                                   color_mode=vc_mode)
 
     # ── Preserved verbatim header regions ────────────────────────────────────
 
@@ -5819,21 +6676,27 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
 
     # ── Step 2: Build vertex / normal tables ──────────────────────────────────
 
-    v_count = len(mesh.vertices)
+    bl_count = len(mesh.vertices)
+    # v0.34.0: coincident duplicates of one table vertex (see 'fe_orig_vertex') are written as ONE entry.
+    _origins = gs_vertex_origins(mesh) or [-1] * bl_count
+    _quant = []
+    for i in range(bl_count):
+        co = mesh.vertices[i].co
+        _quant.append((max(-32768, min(32767, round(co.x * vert_scale))),
+                       max(-32768, min(32767, round(co.y * vert_scale))),
+                       max(-32768, min(32767, round(co.z * vert_scale)))))
+    bl_to_table, table_src = gs_build_vertex_table(_origins, _quant)
+    v_count = len(table_src)            # entries in the vertex table (<= number of Blender vertices)
     print(f"\n=== VERTEX COUNT DEBUG ===")
-    print(f"  mesh.vertices count: {v_count}")
+    print(f"  mesh.vertices count: {bl_count}  ->  vertex table entries: {v_count}")
     print(f"  gs['vertex_count']: {gs.get('vertex_count', 'NOT SET')}")
-    print(f"  Will use v_count = {v_count} for export")
 
     pos_bytes = bytearray()
     # Track AABB as vertices are added
     pos_min = [32767, 32767, 32767]
     pos_max = [-32767, -32767, -32767]
-    for i in range(v_count):
-        co = mesh.vertices[i].co
-        x  = max(-32768, min(32767, round(co.x * vert_scale)))
-        y  = max(-32768, min(32767, round(co.y * vert_scale)))
-        z  = max(-32768, min(32767, round(co.z * vert_scale)))
+    for i in table_src:
+        x, y, z = _quant[i]
         pos_bytes += struct.pack('>hhh', x, y, z)
         pos_min[0] = min(pos_min[0], x)
         pos_min[1] = min(pos_min[1], y)
@@ -5851,9 +6714,9 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
     # Two vertices whose rounded (nx, ny, nz) are identical share one table entry.
     nrm_table      = []          # list of (nx_i8, ny_i8, nz_i8) unique normals
     nrm_key_to_idx = {}          # (nx_i8, ny_i8, nz_i8) → index in nrm_table
-    vert_to_nrm_idx = [0] * v_count   # vertex index → normal table index
+    vert_to_nrm_idx = [0] * bl_count   # BLENDER vertex index → normal table index
 
-    for i in range(v_count):
+    for i in range(bl_count):
         n  = mesh.vertices[i].normal
         nx = max(-128, min(127, round(n.x * norm_scale)))
         ny = max(-128, min(127, round(n.y * norm_scale)))
@@ -6284,18 +7147,17 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
             # for all orig_vi when we reach this mode (the 'missing' check in the
             # caller ensures any chunk with a missing orig_vi falls back to greedy).
 
-            orig_vi_to_bl = {}   # orig_vi → (sb_byte, bl_vi)
-            for orig_vi, bl_vis in orig_to_blender_map.items():
-                if not bl_vis:
-                    continue
-                bl_vi = bl_vis[0]
-                gi = vert_group_map.get(bl_vi)
-                if gi is not None:
-                    bid = bone_id_by_vgroup_idx.get(gi, bone_id_by_name.get(vgroups[gi].name, 0))
-                else:
-                    bid = 0
-                slot = bone_id_to_slot.get(bid, 0)
-                orig_vi_to_bl[orig_vi] = (slot * 3, bl_vi)
+            # v0.34.0: a table vertex can be drawn under several bones.  For every occurrence pick the
+            # Blender vertex whose bone is the occurrence's ORIGINAL bone (palette[original sb // 3]);
+            # fall back to the first Blender vertex of that table vertex.  The position index written is
+            # the vertex-TABLE entry (coincident duplicates share one), the skinning byte comes from the
+            # chosen Blender vertex's own bone.
+            def bone_of_bl(bl_i):
+                gi_ = vert_group_map.get(bl_i)
+                if gi_ is None:
+                    return 0
+                return bone_id_by_vgroup_idx.get(gi_, bone_id_by_name.get(vgroups[gi_].name, 0))
+            orig_pal_ = orig_palettes.get(ci) if ci < n_orig_face_chunks else None
 
             dl = bytearray()
             idx = 0
@@ -6308,12 +7170,26 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
                     tup = orig_vert_tuples[idx]
                     orig_vi, orig_ni, orig_ui = tup[0], tup[1], tup[2]
                     orig_ci = tup[3] if len(tup) > 3 else 0
+                    orig_sb = tup[4] if len(tup) > 4 else None
                     idx += 1
-                    sb_byte, bl_vi = orig_vi_to_bl.get(orig_vi, (0, orig_vi))
+                    bls = orig_to_blender_map.get(orig_vi)
+                    if bls:
+                        bl_vi = bls[0]
+                        if len(bls) > 1 and orig_pal_ is not None and orig_sb is not None \
+                                and orig_sb // 3 < len(orig_pal_):
+                            want = orig_pal_[orig_sb // 3]
+                            for b_ in bls:
+                                if bone_of_bl(b_) == want:
+                                    bl_vi = b_
+                                    break
+                    else:
+                        bl_vi = orig_vi
+                    sb_byte = bone_id_to_slot.get(bone_of_bl(bl_vi), 0) * 3
                     nrm_idx = vert_to_nrm_idx[bl_vi] if bl_vi < len(vert_to_nrm_idx) else 0
+                    tbl_idx = bl_to_table[bl_vi] if bl_vi < len(bl_to_table) else bl_vi
                     if use_sb:
                         dl += struct.pack('>B', sb_byte)
-                    dl += struct.pack('>H', bl_vi)      # current vertex table index
+                    dl += struct.pack('>H', tbl_idx)    # vertex-table entry
                     dl += struct.pack('>H', nrm_idx)    # current normal table index
                     if hc:
                         dl += struct.pack('>H', orig_ci)
@@ -6363,7 +7239,7 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
                         bid = 0
                     slot = bone_id_to_slot.get(bid, 0)
                 col_idx = loop_color_arr.get(li, 0) if hc else 0
-                verts.append((slot * 3, vi, vert_to_nrm_idx[vi], col_idx, loop_uv_arr.get(li, 0)))
+                verts.append((slot * 3, bl_to_table[vi], vert_to_nrm_idx[vi], col_idx, loop_uv_arr.get(li, 0)))   # v0.34.0: table index
             face_vtx[fi] = verts
 
         # Step 2: directed-edge adjacency keyed on full vertex tuples.
@@ -6948,8 +7824,9 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
                 for _ in range(slen):
                     if ptr + bpv > len(raw_orig):
                         break
+                    sb_val = raw_orig[ptr] if sb else 0      # v0.34.0: keep the original skinning byte
                     if sb:
-                        ptr += 1          # skip sb_byte
+                        ptr += 1
                     vi = struct.unpack('>H', raw_orig[ptr:ptr+2])[0]; ptr += 2
                     ni = struct.unpack('>H', raw_orig[ptr:ptr+2])[0]; ptr += 2
                     if hc:
@@ -6958,7 +7835,7 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
                         col_i = 0
                     ui = struct.unpack('>H', raw_orig[ptr:ptr+2])[0]; ptr += 2
                     if hu: ptr += 2
-                    tuples_ordered.append((vi, ni, ui, col_i))
+                    tuples_ordered.append((vi, ni, ui, col_i, sb_val))
             orig_dl_vert_tuples[ci] = tuples_ordered
             orig_dl_strip_lengths[ci] = strip_lengths
 
@@ -6998,17 +7875,25 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
     # For each Blender vertex, find its matching original file vertex index
     # NOTE: Multiple Blender vertices can map to the same original vertex (duplicates)
     orig_to_blender_map = {}  # orig vi -> list of blender vis
-    for bl_vi in range(len(mesh.vertices)):
-        co = mesh.vertices[bl_vi].co
-        bl_key = (round(co.x * 1000), round(co.y * 1000), round(co.z * 1000))
+    if any(o >= 0 for o in _origins):
+        # v0.34.0: exact mapping through the 'fe_orig_vertex' attribute (several Blender vertices
+        # can stand for one table vertex, one per bone it is drawn under)
+        for bl_vi, o in enumerate(_origins):
+            if 0 <= o < orig_v_count:
+                orig_to_blender_map.setdefault(o, []).append(bl_vi)
+    else:
+        # meshes imported before v0.34.0: match by position
+        for bl_vi in range(len(mesh.vertices)):
+            co = mesh.vertices[bl_vi].co
+            bl_key = (round(co.x * 1000), round(co.y * 1000), round(co.z * 1000))
         
-        # Find matching original vertex
-        for orig_vi, pos_data in orig_vert_pos_by_idx.items():
-            if pos_data == bl_key:
-                if orig_vi not in orig_to_blender_map:
-                    orig_to_blender_map[orig_vi] = []
-                orig_to_blender_map[orig_vi].append(bl_vi)
-                break
+            # Find matching original vertex
+            for orig_vi, pos_data in orig_vert_pos_by_idx.items():
+                if pos_data == bl_key:
+                    if orig_vi not in orig_to_blender_map:
+                        orig_to_blender_map[orig_vi] = []
+                    orig_to_blender_map[orig_vi].append(bl_vi)
+                    break
     
     print(f"  DEBUG: Built orig_to_blender_map: {len(orig_to_blender_map)} vertices mapped")
 
@@ -8145,7 +9030,8 @@ class ImportGSWithSkeleton(bpy.types.Operator, ImportHelper):
                 arm_obj = create_armature(model_name, bones, skeleton_filepath=skel_path,
                                           rest_mode=self.rest_mode)
                 apply_skin_weights(mesh_obj, arm_obj,
-                                   md.get('skin_weights', {}), bones)
+                                   md.get('skin_weights', {}), bones,
+                                   skin_multi=md.get('skin_multi'))
                 create_unit_vertex_groups(mesh_obj, arm_obj, bones)
                 # Store original skeleton bone count so the exporter can
                 # distinguish original bones from user-added or transplanted ones.
@@ -8778,6 +9664,14 @@ class ExportFromArmature(bpy.types.Operator, ExportHelper):
         default='ORIGINAL',
     )
 
+    addon_chunk_type: EnumProperty(   # v0.34.5
+        name="Addon chunks (composite bodies):",
+        description="How addon meshes are stored in a composite (zu) body",
+        items=[('BLENDED', "Blended (weights)", "New chunks use the blended-vertex buffer with the vertex-group weights (recommended)"),
+               ('SINGLE', "Single bone (experimental)", "New chunks are single-bone shapes using the regular position table")],
+        default='BLENDED',
+    )
+
     # Per-instance state set in invoke, read in draw/execute.
     # Can't use CollectionProperty easily with ExportHelper, so we serialise
     # the checklist as a compact string stored on the operator instance.
@@ -8906,6 +9800,8 @@ class ExportFromArmature(bpy.types.Operator, ExportHelper):
         layout.prop(self, "vertex_color_mode", expand=True)
         layout.label(text="Material names:")
         layout.prop(self, "material_names", expand=True)
+        layout.label(text="Addon chunks (composite bodies):")
+        layout.prop(self, "addon_chunk_type", expand=True)
 
     def execute(self, context):
         arm_obj = context.active_object
@@ -8994,6 +9890,7 @@ class ExportFromArmature(bpy.types.Operator, ExportHelper):
                 vc_mode=self.vertex_color_mode,
                 append_new_bones=(self.bone_order == 'REFERENCE'),
                 mat_name_mode=self.material_names,
+                addon_chunk_mode=self.addon_chunk_type,
             )
             if ok:
                 addon_note = f" + {len(addon_objs)} addon mesh(es)" if addon_objs else ""
