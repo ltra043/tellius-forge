@@ -2,7 +2,7 @@ bl_info = {
     "name": "Tellius Forge",
     "description": "Fire Emblem 9 & 10 Asset Handler",
     "author": "Jade (ltra043), based on work by Zheneq and ATMachine",
-    "version": (0, 29, 2),
+    "version": (0, 30, 5),
     "blender": (4, 2, 0),
     "location": "File > Import, File > Export",
     "category": "Import-Export",
@@ -488,7 +488,15 @@ def _ga_bone_translate_frame(arm_obj, bone_name):
         rest = struct.unpack('>fff', bytes.fromhex(hexs)[88:100])
     m = bone.matrix_local.to_3x3()
     if bone.parent is not None:
-        m = bone.parent.matrix_local.to_3x3().inverted() @ m
+        pm = bone.parent.matrix_local.to_3x3()
+        # v0.30.0: file translate is expressed in the parent's CHAIN frame,
+        # which is the parent's bone frame times its rotate axis.
+        ro = bone.parent.get('fe_rotate_axis_deg')
+        if ro is not None and any(abs(float(v)) > 1e-9 for v in ro):
+            pm = pm @ Euler((math.radians(float(ro[0])),
+                             math.radians(float(ro[1])),
+                             math.radians(float(ro[2]))), 'XYZ').to_matrix()
+        m = pm.inverted() @ m
     rel = [[m[r][c] for c in range(3)] for r in range(3)]
     comp = (0.0, 0.0, 0.0)
     pb = arm_obj.pose.bones.get(bone_name)
@@ -558,8 +566,207 @@ def _is_class_b_by_data(px112, py112, pz112, px88, py88, pz88):
 # SKELETON (.g) — READING
 # =============================================================================
 
-def read_skeleton_file(filepath):
-    """Parse a .g skeleton file."""
+# =============================================================================
+# 3x4 AFFINE HELPERS AND THE ENGINE'S BONE MATRIX   (v0.30.1)
+# =============================================================================
+#
+# An affine transform is a pair (R, t): R = 3x3 matrix (tuple of 3 row tuples),
+# t = translation (x, y, z).  Column-vector convention: p' = R p + t.
+#
+# Local matrix of a bone (verified against the stored +188 matrix, 131/134 on drm2):
+#     L = T(translate) . T(p) . JO . Rot . RO . S . T(-p)
+#   p = rotate pivot (+112, also the scale pivot), JO = joint orient (+100),
+#   Rot = rotate (+76), RO = rotate axis (+160), S = scale (+64).
+#   Each Euler triple is Rz*Ry*Rx in degrees.
+# World matrix:  world[bone] = world[parent] . L[bone]
+# Joint position = world[bone] applied to p.  (It simplifies to
+#   world[parent] applied to (translate + p), whatever the rotation or scale.)
+
+IDENT3 = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+IDENT_AFFINE = (IDENT3, (0.0, 0.0, 0.0))
+
+
+def euler_deg_to_mat3(deg):
+    """Rz * Ry * Rx for XYZ Euler angles in degrees."""
+    x, y, z = (math.radians(d) for d in deg)
+    cx, sx = math.cos(x), math.sin(x)
+    cy, sy = math.cos(y), math.sin(y)
+    cz, sz = math.cos(z), math.sin(z)
+    return ((cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx),
+            (sz * cy, sz * sy * sx + cz * cx, sz * sy * cx - cz * sx),
+            (-sy,     cy * sx,                cy * cx))
+
+
+def mat3_mul(A, B):
+    return tuple(tuple(sum(A[i][k] * B[k][j] for k in range(3)) for j in range(3))
+                 for i in range(3))
+
+
+def mat3_inverse(m):
+    """Inverse of a 3x3 matrix, or None if it is singular."""
+    a, b, c = m[0]
+    d, e, f = m[1]
+    g, h, i = m[2]
+    det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+    if abs(det) < 1e-12:
+        return None
+    k = 1.0 / det
+    return (((e * i - f * h) * k, (c * h - b * i) * k, (b * f - c * e) * k),
+            ((f * g - d * i) * k, (a * i - c * g) * k, (c * d - a * f) * k),
+            ((d * h - e * g) * k, (b * g - a * h) * k, (a * e - b * d) * k))
+
+
+def affine_mul(a, b):
+    """a . b  (apply b first, then a)."""
+    R = mat3_mul(a[0], b[0])
+    t = tuple(sum(a[0][i][k] * b[1][k] for k in range(3)) + a[1][i] for i in range(3))
+    return (R, t)
+
+
+def affine_apply(a, v):
+    return tuple(sum(a[0][i][k] * v[k] for k in range(3)) + a[1][i] for i in range(3))
+
+
+def affine_inverse(a):
+    """Inverse of an affine transform, or None if its 3x3 is singular."""
+    Ri = mat3_inverse(a[0])
+    if Ri is None:
+        return None
+    t = tuple(-sum(Ri[i][k] * a[1][k] for k in range(3)) for i in range(3))
+    return (Ri, t)
+
+
+def safe_scale(s):
+    """A rest scale of 0 would make the chain singular; treat it as 1 for placement."""
+    return tuple(v if abs(v) > 1e-6 else 1.0 for v in s)
+
+
+def bone_local_affine(translate, pivot, joint_orient_deg, rotate_deg, rotate_axis_deg, scale):
+    """L = T(translate) . T(pivot) . JO . Rot . RO . S . T(-pivot)  as (R, t)."""
+    R = mat3_mul(mat3_mul(euler_deg_to_mat3(joint_orient_deg), euler_deg_to_mat3(rotate_deg)),
+                 euler_deg_to_mat3(rotate_axis_deg))
+    M = tuple(tuple(R[i][j] * scale[j] for j in range(3)) for i in range(3))
+    Mp = tuple(sum(M[i][k] * pivot[k] for k in range(3)) for i in range(3))
+    return (M, tuple(translate[i] + pivot[i] - Mp[i] for i in range(3)))
+
+
+# =============================================================================
+# BIND-POSE REST POSITIONS   (v0.30.2)
+# =============================================================================
+#
+# The mesh vertices live in BIND space; the skeleton's stored values describe
+# the SEED pose, which can differ per rig (drm2: Reference translate -5 in Z,
+# Base scale 0.909 + translate).  Each bone's skin matrix (+16) is the inverse
+# of its world matrix at bind time, so  inverse(skin) applied to the rotate
+# pivot  is the joint position the mesh was bound to.
+#
+# Per bone we work with   offset = bind_position - seed_position.
+#   * trusted bone  : real (non-identity) skin matrix whose offset lies within
+#                     BIND_TRUST_DIST of its rig's MEDIAN offset (leaf tips of
+#                     the drm2 dragon have unusable skin matrices: off by 2..27)
+#   * other bones   : inherit the parent's offset; a root with no trusted
+#                     parent takes the offset of its nearest trusted descendant
+#                     (Reference/Base have identity skin but sit on the shift);
+#                     rigs with no trusted bone at all keep offset 0.
+BIND_TRUST_DIST = 1.0
+
+
+def compute_bind_positions(bones, trust=BIND_TRUST_DIST):
+    """Fill b['bind_offset'] and b['seed_position'] for every bone; returns
+    (n_trusted, n_inherited).  Does not change b['position']."""
+    n = len(bones)
+    eng = [tuple(b['position']) for b in bones]
+    children = [[] for _ in range(n)]
+    for b in bones:
+        p = b['parent_idx']
+        if p is not None and 0 <= p < n and p != b['index']:
+            children[p].append(b['index'])
+
+    def root_of(i):
+        seen = 0
+        while bones[i]['parent_idx'] is not None and seen < n:
+            i = bones[i]['parent_idx']
+            seen += 1
+        return i
+
+    raw = {}                                  # index -> offset from the skin matrix
+    ident = {}                                # identity-skin bones -> offset (pivot - seed)
+    for b in bones:
+        sk = b.get('skin')
+        if sk is None:
+            continue
+        R = tuple(tuple(sk[r * 4 + c] for c in range(3)) for r in range(3))
+        t = (sk[3], sk[7], sk[11])
+        is_id = (all(abs(R[r][c] - (1.0 if r == c else 0.0)) < 1e-3
+                     for r in range(3) for c in range(3))
+                 and max(abs(v) for v in t) < 1e-3)
+        if is_id:
+            # Identity skin = the bone's BIND world matrix is the identity, so its joint
+            # sits at the raw rotate pivot.  Vertices of such bones are stored in the
+            # bone's own space (lord2 legs: "disjointed" until the seed pose assembles
+            # them), so this is where the bone must rest.  Always trusted.
+            ident[b['index']] = tuple(b['p112'][k] - eng[b['index']][k] for k in range(3))
+            continue
+        inv = affine_inverse((R, t))
+        if inv is None:
+            continue
+        cand = affine_apply(inv, b['p112'])
+        raw[b['index']] = tuple(cand[k] - eng[b['index']][k] for k in range(3))
+
+    by_root = {}
+    for i in raw:
+        by_root.setdefault(root_of(i), []).append(i)
+    off = {}
+    for r, ids in by_root.items():
+        med = []
+        for k in range(3):
+            v = sorted(raw[i][k] for i in ids)
+            m = len(v) // 2
+            med.append(v[m] if len(v) % 2 else 0.5 * (v[m - 1] + v[m]))
+        for i in ids:
+            if math.sqrt(sum((raw[i][k] - med[k]) ** 2 for k in range(3))) <= trust:
+                off[i] = raw[i]
+    off.update(ident)
+    n_trusted = len(off)
+
+    def nearest_descendant(i):
+        queue = list(children[i])
+        while queue:
+            j = queue.pop(0)
+            if j in off:
+                return off[j]
+            queue.extend(children[j])
+        return None
+
+    final = dict(off)
+
+    def resolve(i, depth=0):
+        if i in final:
+            return final[i]
+        par = bones[i]['parent_idx']
+        if par is not None and 0 <= par < n and par != i and depth < n:
+            o = resolve(par, depth + 1)
+        else:
+            o = nearest_descendant(i) or (0.0, 0.0, 0.0)
+        final[i] = o
+        return o
+
+    for i in range(n):
+        resolve(i)
+    for b in bones:
+        b['seed_position'] = eng[b['index']]
+        b['bind_offset'] = tuple(final[b['index']])
+    return n_trusted, n - n_trusted
+
+
+def read_skeleton_file(filepath, rest_mode='SEED'):
+    """Parse a .g skeleton file.
+
+    rest_mode  'SEED' : bone heads = the engine's seed pose (v0.30.1 behaviour)
+               'BIND' : bone heads = the pose the mesh was bound in (see
+                        compute_bind_positions); b['position'] is shifted by
+                        b['bind_offset'].  Use this to line the armature up
+                        with the imported mesh."""
     with open(filepath, 'rb') as f:
         raw = f.read()
 
@@ -610,6 +817,15 @@ def read_skeleton_file(filepath):
         prot_y = rf4(base + 104)
         prot_z = rf4(base + 108)
 
+        # v0.30.0: rotate axis (+160/+164/+168), degrees, XYZ Euler (Rz*Ry*Rx).
+        ro_x = rf4(base + 160)
+        ro_y = rf4(base + 164)
+        ro_z = rf4(base + 168)
+        # v0.30.1: remaining value-block slots needed for engine-style placement
+        sc_vals   = (rf4(base + 64), rf4(base + 68), rf4(base + 72))
+        rot_vals  = (rf4(base + 76), rf4(base + 80), rf4(base + 84))
+        seed_vals = struct.unpack('>12f', raw[base + 188 : base + 236])
+
         bind_matrix_hex = raw[base + 16 : base + 80].hex()
 
         name_off   = ru4(base + BONE_STRIDE - 4)
@@ -655,266 +871,81 @@ def read_skeleton_file(filepath):
             'raw_rec_hex':     raw_rec_hex,
             # Local rotation angles in degrees for transform accumulation
             'local_rot_deg':   (prot_x, prot_y, prot_z),
+            'rotate_axis_deg': (ro_x, ro_y, ro_z),
+            'scale':           sc_vals,
+            'rotate_deg':      rot_vals,
+            'translate':       (px88, py88, pz88),
+            'seed':            seed_vals,
+            'skin':            struct.unpack('>12f', raw[base + 16 : base + 64]),
         })
 
-    # ── World-space accumulation (v0.25.1) ────────────────────────────────────
+    # ── v0.30.1: engine-style bone placement ─────────────────────────────────
     #
-    # NAIVE REST-POSE POSITIONS (stored in b['position'], used for bone head placement
-    # and mesh skinning):
-    #   Class A, no B ancestor:  b['position'] = p112  (absolute world)
-    #   Class B:                 b['position'] = p88 accumulated from (0,0,0), no rotation
-    #   Class A with B ancestor: b['position'] = TRUE accumulated world position
-    #                            (same as v0.25.1 true_world — matches mesh verts because
-    #                             p112 is stored as an offset from the B-chain anchor)
+    # Replaces the old Class A / Class B accumulation and the pose_location /
+    # pose_rotation passes.  Every bone is treated the same way:
+    #     world[bone] = world[parent] . L[bone]          (see bone_local_affine)
+    #     position    = world[bone] applied to the rotate pivot (+112)
+    # so Class A bones with scale or translate (Base, transform1, ...) and
+    # rotate-axis bones need no special case.  The armature rest pose IS the
+    # engine's seed pose, so no compensating pose offsets are needed any more
+    # (pose_location / pose_rotation are all zero).
     #
-    # TRUE WORLD POSITIONS (computed with rotation-aware accumulation):
-    #   Used for Class B bones to compute pose_location and world_rot for tail direction.
-    #   Class A-under-B uses true_world as its rest position directly.
+    # Blender bone frames (world_rot) are scale-free rotation chains:
+    #     frame(b) = chain(parent) . JO_b          orientation of the edit bone
+    #     chain(b) = frame(b) . Rot_b . RO_b       what children inherit
+    # Known limits: scale along the chain moves the joints (it is in the
+    # positions) but is NOT applied to animated translate keys; rest Rot != 0
+    # is baked into the rest pose rather than shown as a pose rotation.
+    resolved = {}
 
-    def _mat3_identity():
-        return [[1.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0],
-                [0.0, 0.0, 1.0]]
-
-    def _mat3_mul(A, B):
-        return [[sum(A[r][k] * B[k][c] for k in range(3))
-                 for c in range(3)] for r in range(3)]
-
-    def _rot_x(deg):
-        a = math.radians(deg); c, s = math.cos(a), math.sin(a)
-        return [[1, 0, 0], [0, c, -s], [0, s, c]]
-
-    def _rot_y(deg):
-        a = math.radians(deg); c, s = math.cos(a), math.sin(a)
-        return [[c, 0, s], [0, 1, 0], [-s, 0, c]]
-
-    def _rot_z(deg):
-        a = math.radians(deg); c, s = math.cos(a), math.sin(a)
-        return [[c, -s, 0], [s, c, 0], [0, 0, 1]]
-
-    def _apply_rot(mat3, vec3):
-        return tuple(sum(mat3[r][c] * vec3[c] for c in range(3)) for r in range(3))
-
-    def _local_rotation(deg_xyz):
-        """Rz * Ry * Rx from XYZ Euler degrees."""
-        return _mat3_mul(_rot_z(deg_xyz[2]),
-                         _mat3_mul(_rot_y(deg_xyz[1]), _rot_x(deg_xyz[0])))
-
-    def _has_b_ancestor(bone_idx):
-        par = bones[bone_idx]['parent_idx']
-        while par is not None:
-            if bones[par]['pos_source'] == 'B':
-                return True
-            par = bones[par]['parent_idx']
-        return False
-
-    # Step 1: compute true world positions using rotation-aware accumulation
-    b_chain_pos = {}   # B-chain position from (0,0,0), ignoring Class A ancestors
-    b_chain_rot = {}
-    true_world  = {}
-    true_rot    = {}
-
-    for b in bones:
-        idx  = b['index']
-        is_b = (b['pos_source'] == 'B')
-        par  = b['parent_idx']
-        deg  = b['local_rot_deg']
-        local_R = _local_rotation(deg) if any(abs(d) > 1e-6 for d in deg) else _mat3_identity()
-
-        if par is None:
-            true_world[idx] = b['p112']
-            true_rot[idx]   = _mat3_identity()
-            continue
-
-        if not is_b and not _has_b_ancestor(idx):
-            true_world[idx] = b['p112']
-            true_rot[idx]   = _mat3_identity()
-            continue
-
-        if is_b:
-            pw = b_chain_pos[par] if par in b_chain_pos else (0.0, 0.0, 0.0)
-            pR = b_chain_rot[par] if par in b_chain_rot else _mat3_identity()
-            rt = _apply_rot(pR, b['raw_p88'])
-            wx, wy, wz = pw[0]+rt[0], pw[1]+rt[1], pw[2]+rt[2]
-            b_chain_pos[idx] = (wx, wy, wz)
-            b_chain_rot[idx] = _mat3_mul(pR, local_R)
-            true_world[idx]  = (wx, wy, wz)
-            true_rot[idx]    = _mat3_mul(pR, local_R)
-            continue
-
-        # Class A with B ancestor: add p112 to nearest B ancestor's b_chain_pos
-        nb_pos = (0.0, 0.0, 0.0)
-        nb_rot = _mat3_identity()
-        anc = par
-        while anc is not None:
-            if bones[anc]['pos_source'] == 'B':
-                nb_pos = b_chain_pos.get(anc, (0.0, 0.0, 0.0))
-                nb_rot = b_chain_rot.get(anc, _mat3_identity())
-                break
-            anc = bones[anc]['parent_idx']
-        rt = _apply_rot(nb_rot, b['p112'])
-        wx, wy, wz = nb_pos[0]+rt[0], nb_pos[1]+rt[1], nb_pos[2]+rt[2]
-        true_world[idx] = (wx, wy, wz)
-        true_rot[idx]   = _mat3_identity()
-
-    # Step 2: set rest-pose positions and pose transforms
-    #   Rest position = v0-25-2 calculation (correct rest position)
-    #   Pose transforms = v0-25-1_pos - v0-25-2_pos (difference between old "pose" and new "rest")
-    #
-    # v0-25-1 "pose position" was calculated as:
-    #   Class B: naive = base + p88 (no parent rotation applied)
-    #   Class A: true_world (rotation-aware accumulation)
-    #
-    # v0-25-2 "rest position" is:
-    #   Class B: base + apply(parent_rot, p88)
-    #   Class A: p112
-    #
-    # Pose transforms:
-    #   pose_location: ONLY on Class A bones with DIRECT Class B parent
-    #   pose_rotation: combined from all B ancestors for Class A with direct B parent
-    for b in bones:
-        idx = b['index']
+    def resolve(i, depth=0):
+        if i in resolved:
+            return resolved[i]
+        b = bones[i]
         par = b['parent_idx']
-        parent_is_b = par is not None and bones[par]['pos_source'] == 'B'
-
-        if b['pos_source'] == 'B':
-            # v0-25-2 rest position (current, with parent rotation)
-            lx, ly, lz = b['raw_p88']
-            base = (0.0, 0.0, 0.0)
-            parent_rot = _mat3_identity()
-            anc = b['parent_idx']
-            while anc is not None:
-                if bones[anc]['pos_source'] == 'B':
-                    base = bones[anc]['position']
-                    parent_rot = true_rot.get(anc, _mat3_identity())
-                    break
-                anc = bones[anc]['parent_idx']
-            rotated_p88 = _apply_rot(parent_rot, (lx, ly, lz))
-            rest_pos = (base[0] + rotated_p88[0], base[1] + rotated_p88[1], base[2] + rotated_p88[2])
-            b['position'] = rest_pos
-
-            # pose_location computed in two-pass block below
-            b['pose_location'] = None
+        if par is not None and par != i and 0 <= par < len(bones) and depth < len(bones):
+            Wp, Rp = resolve(par, depth + 1)
         else:
-            # Class A: rest = p112
-            b['position'] = b['p112']
-            # pose_location computed in two-pass block below
-            b['pose_location'] = None
+            Wp, Rp = IDENT_AFFINE, IDENT3
+        L = bone_local_affine(b['translate'], b['p112'], b['local_rot_deg'],
+                              b['rotate_deg'], b['rotate_axis_deg'], safe_scale(b['scale']))
+        W = affine_mul(Wp, L)
+        frame = mat3_mul(Rp, euler_deg_to_mat3(b['local_rot_deg']))
+        chain = mat3_mul(mat3_mul(frame, euler_deg_to_mat3(b['rotate_deg'])),
+                         euler_deg_to_mat3(b['rotate_axis_deg']))
+        b['position']  = affine_apply(W, b['p112'])
+        b['world_rot'] = [list(r) for r in frame]
+        b['engine_local'] = L
+        b['world_affine'] = W
+        resolved[i] = (W, chain)
+        return resolved[i]
 
-        b['world_rot'] = true_rot.get(idx, _mat3_identity())
-
-    # ── Two-pass pose_location computation ────────────────────────────
-    # Pass 1: flag==0x180 bones get current plugin behavior.
-    #         (Class A with direct B parent: true_world - p112; else zero)
-    #         flag!=0x180 bones remain None (placeholder) for pass 2.
+    n_seed_diff = 0
+    seed_diff_names = []
     for b in bones:
-        if b['bone_flags'] == 0x180:
-            par = b['parent_idx']
-            if par is not None and bones[par]['pos_source'] == 'B':
-                v0251_rest = true_world.get(b['index'], b['p112'])
-                b['pose_location'] = (
-                    v0251_rest[0] - b['p112'][0],
-                    v0251_rest[1] - b['p112'][1],
-                    v0251_rest[2] - b['p112'][2],
-                )
-            else:
-                b['pose_location'] = (0.0, 0.0, 0.0)
+        resolve(b['index'])
+        L, st = b['engine_local'], b['seed']
+        err = max(max(abs(L[0][r][c] - st[r * 4 + c]) for r in range(3) for c in range(3)),
+                  max(abs(L[1][r] - st[r * 4 + 3]) for r in range(3)))
+        if err > 1e-3:
+            n_seed_diff += 1
+            seed_diff_names.append(b['name'])
+        b['pose_location']       = (0.0, 0.0, 0.0)
+        b['pose_location_world'] = (0.0, 0.0, 0.0)
+        b['pose_rotation']       = (0.0, 0.0, 0.0)
+    print(f"  [SKEL] engine-style placement: rebuilt local matrix differs from the stored "
+          f"seed matrix on {n_seed_diff}/{len(bones)} bones"
+          + (f" (e.g. {seed_diff_names[:5]})" if seed_diff_names else ""))
 
-    # Pass 2: iterate in file order (parent before child), replace
-    #          placeholders with negated sum of ancestors' pose_locations.
     for b in bones:
-        if b['pose_location'] is None:
-            sx = sy = sz = 0.0
-            anc = b['parent_idx']
-            while anc is not None:
-                anc_loc = bones[anc]['pose_location']
-                if anc_loc is not None:
-                    sx += anc_loc[0]
-                    sy += anc_loc[1]
-                    sz += anc_loc[2]
-                anc = bones[anc]['parent_idx']
-            b['pose_location'] = (-sx, -sy, -sz)
-
-    # Pass 3: for 0x180 bones whose direct parent has flag=0x66, trace up
-    #          the uninterrupted 0x66 ancestor chain and subtract the OLDEST
-    #          0x66 ancestor's pose_location from the child's.
-    for b in bones:
-        if b['bone_flags'] == 0x180:
-            par = b['parent_idx']
-            if par is not None and bones[par]['bone_flags'] == 0x66:
-                oldest_66 = par
-                anc = bones[par]['parent_idx']
-                while anc is not None and bones[anc]['bone_flags'] == 0x66:
-                    oldest_66 = anc
-                    anc = bones[anc]['parent_idx']
-                oldest_loc = bones[oldest_66].get('pose_location', (0.0, 0.0, 0.0))
-                current = b.get('pose_location', (0.0, 0.0, 0.0))
-                b['pose_location'] = (
-                    current[0] - oldest_loc[0],
-                    current[1] - oldest_loc[1],
-                    current[2] - oldest_loc[2],
-                )
-
-    # Pass 4 (v0.28.1): convert pose_location into each bone's LOCAL rest frame.
-    #
-    # Passes 1-3 produce pose_location as a displacement along WORLD axes.
-    # That was right in v0.27.1, where every edit bone had a flat (identity)
-    # basis. Since v0.28.0 each bone's edit-bone basis is world_rot, and
-    # Blender interprets pose_bone.location along the bone's OWN rest axes.
-    # So a world-space vector d must become  local = world_rot^T * d.
-    #
-    # Why no ancestor terms are needed: pose rotation is only ever set on
-    # Class A bones (whose world_rot is identity) and rest rotation only on
-    # Class B bones (whose pose rotation is zero), so a rotated rest frame
-    # never meets a pose rotation on the same bone. Head positions therefore
-    # come out identical to v0.27.1 (verified on lord2: max error ~1e-15).
-    for b in bones:
-        loc_w = b.get('pose_location', (0.0, 0.0, 0.0))
-        b['pose_location_world'] = loc_w          # kept for debugging
-        R = b.get('world_rot')
-        if R is None or not any(abs(v) > 1e-9 for v in loc_w):
-            continue
-        b['pose_location'] = tuple(
-            sum(R[r][c] * loc_w[r] for r in range(3)) for c in range(3)
-        )
-
-    # Add combined rotation for Class A bones with direct B parent
-    # Walk up the ancestor chain, collecting rotations from all B bones
-    for b in bones:
-        par = b['parent_idx']
-        if b['pos_source'] == 'A' and par is not None and bones[par]['pos_source'] == 'B':
-            # Collect all B ancestor rotations in order from nearest to farthest
-            anc_rotations = []
-            anc = par
-            while anc is not None:
-                if bones[anc]['pos_source'] == 'B':
-                    anc_rot = bones[anc].get('local_rot_deg', (0.0, 0.0, 0.0))
-                    anc_rotations.append(anc_rot)
-                anc = bones[anc]['parent_idx']
-            
-            # Combine rotations: apply nearest first, then farthest last
-            # R_combined = R_nearest * ... * R_farthest
-            combined = _mat3_identity()
-            for rot_deg in anc_rotations:
-                local_R = _local_rotation(rot_deg)
-                combined = _mat3_mul(local_R, combined)  # Apply new rotation on LEFT (before existing)
-            
-            # Store combined rotation as Euler XYZ
-            # Convert rotation matrix to Euler angles (XYZ order)
-            # sy = sqrt(m00^2 + m10^2)
-            sy = math.sqrt(combined[0][0]**2 + combined[1][0]**2)
-            if sy > 1e-6:
-                x = math.atan2(combined[2][1], combined[2][2])
-                y = math.atan2(-combined[2][0], sy)
-                z = math.atan2(combined[1][0], combined[0][0])
-            else:
-                x = math.atan2(-combined[1][2], combined[1][1])
-                y = math.atan2(-combined[2][0], sy)
-                z = 0.0
-            
-            b['pose_rotation'] = (math.degrees(x), math.degrees(y), math.degrees(z))
-        else:
-            b['pose_rotation'] = (0.0, 0.0, 0.0)
+        b['seed_position'] = tuple(b['position'])
+        b['bind_offset'] = (0.0, 0.0, 0.0)
+    if rest_mode == 'BIND':
+        n_tr, n_inh = compute_bind_positions(bones)
+        for b in bones:
+            b['position'] = tuple(b['seed_position'][k] + b['bind_offset'][k] for k in range(3))
+        print(f"  [SKEL] BIND rest: {n_tr} bones placed from their skin matrix, "
+              f"{n_inh} inherit an offset")
 
     # DEBUG: Uncomment to see bone position list
     for b in bones:
@@ -989,15 +1020,36 @@ def write_skeleton_file(armature_obj, filepath, source_filepath="", append_new_b
     arm = armature_obj.data
 
     # --- Phase 1: Collect bones, storing Blender parent NAME (not index yet) ---
+    def _bind_offset_of(bone, depth=0):
+        """Bind-space offset stored at import; a bone added in Blender has none
+        and inherits its parent's (it was placed in the same bind-space frame)."""
+        v = bone.get('fe_bind_offset')
+        if v is not None:
+            return tuple(float(x) for x in v)
+        if bone.parent is not None and depth < 1000:
+            return _bind_offset_of(bone.parent, depth + 1)
+        return (0.0, 0.0, 0.0)
+
     bones_raw = []
     for bone in arm.bones:
         idx      = bone.get('fe_bone_index', None)
         par_name = bone.parent.name if bone.parent else None
         pos      = bone.head_local
-        # Get the export name (convert __ back to :)
-        export_name = bone.name.replace('__', ':')
+        # v0.30.2: heads may be in bind space; the placement math below works in
+        # seed space, so remove the offset stored at import (0 if absent).
+        _bo = _bind_offset_of(bone)
+        pos = Vector((pos.x - _bo[0], pos.y - _bo[1], pos.z - _bo[2]))
+        # v0.30.3: a bone that still has its import name is written back under its
+        # ORIGINAL name.  (The old blanket '__' -> ':' turned the real names
+        # 'prefix__l_hand_tip' into 'prefix:l_hand_tip' and orphaned them.)
+        # Only bones added or renamed in Blender go through the '__' -> ':' rule.
+        if bone.get('fe_import_name') == bone.name and bone.get('fe_original_name'):
+            export_name = str(bone['fe_original_name'])
+        else:
+            export_name = bone.name.replace('__', ':')
         bones_raw.append({
             'blender_bone':    bone,
+            'blender_name':    bone.name,
             'fe_index':        idx,
             'par_name':        par_name,
             'parent_idx':      None,          # resolved in Phase 3
@@ -1096,7 +1148,8 @@ def write_skeleton_file(armature_obj, filepath, source_filepath="", append_new_b
                 next_free += 1
 
     # --- Phase 3: Resolve parent indices using the finalised name→index map ---
-    name_to_idx = {b['name']: b['fe_index'] for b in bones_raw}
+    # v0.30.3: par_name is a BLENDER name, so look it up by Blender name
+    name_to_idx = {b['blender_name']: b['fe_index'] for b in bones_raw}
     for b in bones_raw:
         if b['par_name'] is not None:
             resolved = name_to_idx.get(b['par_name'], None)
@@ -1168,6 +1221,13 @@ def write_skeleton_file(armature_obj, filepath, source_filepath="", append_new_b
             next_sib[clist_sorted[i]] = clist_sorted[i + 1]
         next_sib[clist_sorted[-1]] = -1
 
+    # v0.30.4: root bones are chained as siblings too (original drm2: 0 -> 56 -> 57
+    # -> 73 -> 123 -> 133).  The engine walks first-child / next-sibling from
+    # bone 0, so a root with next_sibling -1 would hide every later root tree.
+    root_idxs = sorted(b['fe_index'] for b in bones_sorted if b['parent_idx'] is None)
+    for i in range(len(root_idxs) - 1):
+        next_sib[root_idxs[i]] = root_idxs[i + 1]
+
     # --- Phase 6: Build string pool ---
     pool         = b'[unknown]\x00'
     name_offsets = []
@@ -1232,19 +1292,57 @@ def write_skeleton_file(armature_obj, filepath, source_filepath="", append_new_b
                 m[1], m[4], m[7],
                 m[2], m[5], m[8])
 
-    # Pre-compute accumulated rotation (true_rot) for all bones.
-    # Used to compute p88 offset relative to nearest Class B ancestor.
-    _true_rot = {}
+    # v0.30.1: engine-style pre-pass.  For each bone (parents first) work out the
+    # stored translate (+88) / rotate pivot (+112) that put its joint at the Blender
+    # head position, given the parent's rebuilt world matrix:
+    #     joint = world[parent] applied to (translate + pivot)
+    # Class B bones adjust translate, Class A bones adjust the pivot; the other half
+    # keeps the value in the original record.  A value that moved by <= 1e-4 is kept
+    # bit-for-bit so untouched skeletons round-trip unchanged.
+    _final = {}
     for _b in bones_sorted:
         _idx = _b['fe_index']
-        _parent_rot = _true_rot.get(_b['parent_idx'], _identity_3x3())
-        _deg = _b['blender_bone'].get('fe_local_rot_deg', (0.0, 0.0, 0.0))
-        try:
-            _deg = (float(_deg[0]), float(_deg[1]), float(_deg[2]))
-        except Exception:
-            _deg = (0.0, 0.0, 0.0)
-        _local_R = _rot_deg_to_3x3(_deg)
-        _true_rot[_idx] = _mul_3x3(_parent_rot, _local_R)
+        _raw_hex = _b['raw_rec_hex']
+        _has_raw = (len(_raw_hex) == BONE_STRIDE * 2)
+        if _has_raw:
+            _rec0 = bytes.fromhex(_raw_hex)
+            _old_s   = struct.unpack_from('>3f', _rec0, 64)
+            _old_rot = struct.unpack_from('>3f', _rec0, 76)
+            _old_t   = struct.unpack_from('>3f', _rec0, 88)
+            _old_jo  = struct.unpack_from('>3f', _rec0, 100)
+            _old_p   = struct.unpack_from('>3f', _rec0, 112)
+            _old_ro  = struct.unpack_from('>3f', _rec0, 160)
+        else:
+            _old_s   = (1.0, 1.0, 1.0)
+            _old_rot = _old_t = _old_jo = _old_p = _old_ro = (0.0, 0.0, 0.0)
+        _jo = _old_jo
+        _jp = _b['blender_bone'].get('fe_local_rot_deg')
+        if _jp is not None:
+            try:
+                _jo = (float(_jp[0]), float(_jp[1]), float(_jp[2]))
+            except Exception:
+                _jo = _old_jo
+        _pidx = _b['parent_idx']
+        _Wp = _final[_pidx]['W'] if (_pidx is not None and _pidx in _final) else IDENT_AFFINE
+        _is_b = (_b['pos_source'] == 'B') and _has_raw
+        _new_t, _new_p = _old_t, _old_p
+        _changed = not _has_raw
+        _Winv = affine_inverse(_Wp)
+        if _Winv is not None:
+            _sum = affine_apply(_Winv, _b['position'])          # = translate + pivot
+            if _is_b:
+                _cand_t = tuple(_sum[k] - _old_p[k] for k in range(3))
+                _cand_p = _old_p
+            else:
+                _cand_t = _old_t
+                _cand_p = tuple(_sum[k] - _old_t[k] for k in range(3))
+            _diff = max(abs(_cand_t[k] - _old_t[k]) + abs(_cand_p[k] - _old_p[k]) for k in range(3))
+            if _diff > 1e-4 or not _has_raw:
+                _new_t, _new_p = _cand_t, _cand_p
+                _changed = True
+        _L = bone_local_affine(_new_t, _new_p, _jo, _old_rot, _old_ro, safe_scale(_old_s))
+        _final[_idx] = {'t': _new_t, 'p': _new_p, 'changed': _changed,
+                        'has_raw': _has_raw, 'W': affine_mul(_Wp, _L)}
 
     # --- Phase 8: Write bone records ---
     for b in bones_sorted:
@@ -1254,31 +1352,9 @@ def write_skeleton_file(armature_obj, filepath, source_filepath="", append_new_b
         is_b       = (b['pos_source'] == 'B')
         bone_flags = b['bone_flags']
 
-        if is_b:
-            # Find nearest Class B ancestor; compute p88 as local offset
-            # from that ancestor in its local frame: p88 = anc_rot^T * (pos - base)
-            base_world = (0.0, 0.0, 0.0)
-            anc_rot = _identity_3x3()
-            anc_idx = b['parent_idx']
-            while anc_idx is not None:
-                anc_bone = bones_by_idx.get(anc_idx)
-                if anc_bone is None:
-                    break
-                if anc_bone['pos_source'] == 'B':
-                    base_world = anc_bone['position']
-                    anc_rot = _true_rot.get(anc_idx, _identity_3x3())
-                    break
-                anc_idx = anc_bone['parent_idx']
-            dx = wx - base_world[0]
-            dy = wy - base_world[1]
-            dz = wz - base_world[2]
-            rot_T = _transpose_3x3(anc_rot)
-            lx, ly, lz = _apply_3x3(rot_T, (dx, dy, dz))
-            p88_vals  = (lx, ly, lz)
-            p112_vals = (0.0, 0.0, 0.0)
-        else:
-            p88_vals  = (0.0, 0.0, 0.0)
-            p112_vals = (wx, wy, wz)
+        _f = _final[idx]
+        p88_vals  = _f['t'] if is_b else (0.0, 0.0, 0.0)
+        p112_vals = _f['p'] if not is_b else (0.0, 0.0, 0.0)
 
         raw_hex = b['raw_rec_hex']
 
@@ -1471,47 +1547,18 @@ def write_skeleton_file(armature_obj, filepath, source_filepath="", append_new_b
                         struct.pack_into('>f', rec, 100, current_rot[0])
                         struct.pack_into('>f', rec, 104, current_rot[1])
                         struct.pack_into('>f', rec, 108, current_rot[2])
-                        # Recompute pre-computed 3x4 local-transform matrix at +188
-                        # R = Rz(rotZ) * Ry(rotY) * Rx(rotX), translation = (tx,ty,tz)
-                        if any(abs(d) > 1e-6 for d in current_rot):
-                            rx = math.radians(current_rot[0])
-                            ry = math.radians(current_rot[1])
-                            rz = math.radians(current_rot[2])
-                            cx, sx = math.cos(rx), math.sin(rx)
-                            cy, sy = math.cos(ry), math.sin(ry)
-                            cz, sz = math.cos(rz), math.sin(rz)
-                            r00 = cz * cy
-                            r01 = cz * sy * sx - sz * cx
-                            r02 = cz * sy * cx + sz * sx
-                            r10 = sz * cy
-                            r11 = sz * sy * sx + cz * cx
-                            r12 = sz * sy * cx - cz * sx
-                            r20 = -sy
-                            r21 = cy * sx
-                            r22 = cy * cx
-                        else:
-                            r00, r01, r02 = 1.0, 0.0, 0.0
-                            r10, r11, r12 = 0.0, 1.0, 0.0
-                            r20, r21, r22 = 0.0, 0.0, 1.0
-
-                        struct.pack_into('>f', rec, 188, r00)
-                        struct.pack_into('>f', rec, 192, r01)
-                        struct.pack_into('>f', rec, 196, r02)
-                        struct.pack_into('>f', rec, 200, tx)
-                        struct.pack_into('>f', rec, 204, r10)
-                        struct.pack_into('>f', rec, 208, r11)
-                        struct.pack_into('>f', rec, 212, r12)
-                        struct.pack_into('>f', rec, 216, ty)
-                        struct.pack_into('>f', rec, 220, r20)
-                        struct.pack_into('>f', rec, 224, r21)
-                        struct.pack_into('>f', rec, 228, r22)
-                        struct.pack_into('>f', rec, 232, tz)
-                    else:
-                        # Position changed only — update the translation column of
-                        # the pre-computed matrix at +200/+216/+232; rotation part unchanged.
-                        struct.pack_into('>f', rec, 200, tx)
-                        struct.pack_into('>f', rec, 216, ty)
-                        struct.pack_into('>f', rec, 232, tz)
+                    # v0.30.1: rebuild the seed matrix (+188) with the engine formula
+                    _L = bone_local_affine(
+                        struct.unpack_from('>3f', rec, 88),
+                        struct.unpack_from('>3f', rec, 112),
+                        struct.unpack_from('>3f', rec, 100),
+                        struct.unpack_from('>3f', rec, 76),
+                        struct.unpack_from('>3f', rec, 160),
+                        safe_scale(struct.unpack_from('>3f', rec, 64)))
+                    for _r in range(3):
+                        for _c in range(3):
+                            struct.pack_into('>f', rec, 188 + (_r * 4 + _c) * 4, _L[0][_r][_c])
+                        struct.pack_into('>f', rec, 188 + (_r * 4 + 3) * 4, _L[1][_r])
 
                 # Always update: bone index and name offset
                 struct.pack_into('>H', rec, BONE_STRIDE - 8, idx)   # +236: bone index uint16
@@ -1529,7 +1576,8 @@ def write_skeleton_file(armature_obj, filepath, source_filepath="", append_new_b
         # at +112/+124. All rotation, scale, and pre-computed matrix fields are zeroed,
         # except the identity diagonal at +188, +208, +228.
         bone_flags = 0x0180   # Force Class A for all new/scratch-built bones
-        wx, wy, wz = b['position']
+        _ff = _final[idx]
+        wx, wy, wz = _ff['p'] if not _ff['has_raw'] else b['position']
 
         bind_bytes = b''.join(struct.pack('>f', v) for v in _BONE_MATRIX_FLOATS)
 
@@ -1638,7 +1686,7 @@ def _generate_unique_bone_names(bones, max_len=50):
     return result
 
 
-def create_armature(obj_name, bones, armature_data_name=None, skeleton_filepath=None):
+def create_armature(obj_name, bones, armature_data_name=None, skeleton_filepath=None, rest_mode='SEED'):
     """Create a Blender Armature from parsed bone data.
     
     obj_name: Name for the armature object
@@ -1723,7 +1771,9 @@ def create_armature(obj_name, bones, armature_data_name=None, skeleton_filepath=
         if p is not None and p in created:
             created[idx][0].parent      = created[p][0]
             dist = (created[idx][0].head - created[p][0].tail).length
-            created[idx][0].use_connect = dist < 0.05
+            # BIND mode needs free 'location' channels on every bone (a connected
+            # bone ignores its location), so nothing is connected there.
+            created[idx][0].use_connect = (dist < 0.05) and rest_mode != 'BIND'
 
     bpy.ops.object.mode_set(mode='OBJECT')
 
@@ -1737,8 +1787,11 @@ def create_armature(obj_name, bones, armature_data_name=None, skeleton_filepath=
         bbone['fe_bind_matrix_hex'] = bone.get('bind_matrix_hex', '')
         bbone['fe_raw_rec_hex']     = bone.get('raw_rec_hex', '')
         bbone['fe_local_rot_deg']  = bone.get('local_rot_deg', (0.0, 0.0, 0.0))
+        bbone['fe_rotate_axis_deg'] = bone.get('rotate_axis_deg', (0.0, 0.0, 0.0))
         bbone['fe_original_name']   = bone['name']
         bbone['fe_original_bone_id'] = bone['index']
+        bbone['fe_bind_offset']     = tuple(bone.get('bind_offset', (0.0, 0.0, 0.0)))
+        bbone['fe_import_name']     = safe_name   # Blender name at import (v0.30.3)
 
     # ── Pose bone transforms ───────────────────────────────────────────────────
     # Apply the difference between true world position and naive rest-pose position
@@ -1798,6 +1851,55 @@ def create_armature(obj_name, bones, armature_data_name=None, skeleton_filepath=
         # Store original transrot (local_rot_deg from bone record) - before rewriting
         # This is useful for animation export/import adjustments
         pbone['fe_original_transrot'] = bone.get('local_rot_deg', (0.0, 0.0, 0.0))
+
+    # ── v0.30.5: BIND mode - pose channels carry the seed pose ──────────────────
+    # The mesh is skinned to the bones at their BIND positions (edit mode).  The
+    # game draws every vertex through  world_seed[b] x skin[b]  ( = D_b ), and
+    # Blender through  pose_b x rest_b^-1, so  pose_b = D_b x rest_b.  With
+    #   pose_b = pose_parent x rest_parent^-1 x rest_b x P_b
+    # the pose-bone channels P_b (location / rotation / scale) that reproduce the
+    # game's seed pose are
+    #   P_b = rest_b^-1 x rest_parent x pose_parent^-1 x pose_b
+    # Clearing the pose (or 'Apply fe_pose' with zeros) shows the bind pose.
+    if rest_mode == 'BIND':
+        def _m4(rows):
+            return Matrix((tuple(rows[0]), tuple(rows[1]), tuple(rows[2]), (0.0, 0.0, 0.0, 1.0)))
+        by_idx = {b['index']: b for b in bones}
+        rest_m, pose_m = {}, {}
+        for b in bones:
+            i = b['index']
+            R, t = b['world_affine']
+            W = _m4([list(R[0]) + [t[0]], list(R[1]) + [t[1]], list(R[2]) + [t[2]]])
+            sk = b['skin']
+            S = _m4([sk[0:4], sk[4:8], sk[8:12]])
+            rest_m[i] = arm_data.bones[unique_names[i]].matrix_local.copy()
+            pose_m[i] = (W @ S) @ rest_m[i]
+        n_set = n_fail = 0
+        for b in bones:
+            i = b['index']
+            pbone = arm_obj.pose.bones.get(unique_names[i])
+            if pbone is None:
+                continue
+            try:
+                par = b['parent_idx']
+                if par is not None and par in pose_m:
+                    M = rest_m[i].inverted() @ rest_m[par] @ pose_m[par].inverted() @ pose_m[i]
+                else:
+                    M = rest_m[i].inverted() @ pose_m[i]
+                loc, quat, sca = M.decompose()
+            except ValueError:            # singular matrix (a scale of 0 somewhere above)
+                n_fail += 1
+                continue
+            eul = quat.to_euler('XYZ')
+            pbone.rotation_mode  = 'XYZ'
+            pbone.location       = loc
+            pbone.rotation_euler = eul
+            pbone.scale          = sca
+            pbone['fe_pose_location'] = tuple(loc)
+            pbone['fe_pose_rotation'] = tuple(math.degrees(a) for a in eul)
+            pbone['fe_pose_scale']    = tuple(sca)
+            n_set += 1
+        print(f"  [BIND] seed pose written to {n_set} pose bones ({n_fail} skipped: singular)")
 
     print(f"  Armature '{obj_name}' created.")
     print(f"  Stored on all bones: fe_bone_index, fe_bone_flags, "
@@ -6972,11 +7074,18 @@ class ImportGSkeleton(bpy.types.Operator, ImportHelper):
     filename_ext = ".g"
     filter_glob: StringProperty(default="*.g", options={'HIDDEN'})
 
+    rest_mode: EnumProperty(
+        name="Rest pose",
+        items=[('BIND', "Mesh bind pose", "Place bones where the mesh was bound (lines up with the .gs mesh)"),
+               ('SEED', "Engine seed pose", "Place bones at the skeleton's stored pose")],
+        default='BIND',
+    )
+
     def execute(self, context):
         try:
-            bones = read_skeleton_file(self.filepath)
+            bones = read_skeleton_file(self.filepath, self.rest_mode)
             name  = os.path.splitext(os.path.basename(self.filepath))[0]
-            create_armature(name, bones, skeleton_filepath=self.filepath)
+            create_armature(name, bones, skeleton_filepath=self.filepath, rest_mode=self.rest_mode)
             self.report({'INFO'}, f"Imported skeleton: {len(bones)} bones")
             return {'FINISHED'}
         except Exception as e:
@@ -7018,6 +7127,13 @@ class ImportGSWithSkeleton(bpy.types.Operator, ImportHelper):
     filename_ext = ".gs"
     filter_glob: StringProperty(default="*.gs", options={'HIDDEN'})
 
+    rest_mode: EnumProperty(
+        name="Rest pose",
+        items=[('BIND', "Mesh bind pose", "Place bones where the mesh was bound (lines up with the mesh)"),
+               ('SEED', "Engine seed pose", "Place bones at the skeleton's stored pose")],
+        default='BIND',
+    )
+
     def execute(self, context):
         try:
             folder = os.path.dirname(self.filepath)
@@ -7039,7 +7155,7 @@ class ImportGSWithSkeleton(bpy.types.Operator, ImportHelper):
 
             bones = None
             if skel_path and os.path.isfile(skel_path):
-                bones = read_skeleton_file(skel_path)
+                bones = read_skeleton_file(skel_path, self.rest_mode)
 
             md       = read_gs_file(self.filepath, bones=bones)
             
@@ -7060,7 +7176,8 @@ class ImportGSWithSkeleton(bpy.types.Operator, ImportHelper):
             mesh_obj = create_blender_mesh(model_name + '_body', md)
 
             if bones is not None:
-                arm_obj = create_armature(model_name, bones, skeleton_filepath=skel_path)
+                arm_obj = create_armature(model_name, bones, skeleton_filepath=skel_path,
+                                          rest_mode=self.rest_mode)
                 apply_skin_weights(mesh_obj, arm_obj,
                                    md.get('skin_weights', {}), bones)
                 create_unit_vertex_groups(mesh_obj, arm_obj, bones)
@@ -8017,6 +8134,7 @@ class FE_OT_ApplyFePoseToPose(bpy.types.Operator):
             # Get fe_pose custom properties
             fe_pose_loc = pbone.get('fe_pose_location')
             fe_pose_rot = pbone.get('fe_pose_rotation')
+            fe_pose_scl = pbone.get('fe_pose_scale')
 
             if fe_pose_loc is None and fe_pose_rot is None:
                 skipped_count += 1
@@ -8046,6 +8164,9 @@ class FE_OT_ApplyFePoseToPose(bpy.types.Operator):
                                                math.radians(float(fe_pose_rot[1])),
                                                math.radians(float(fe_pose_rot[2]))),
                                               'XYZ')
+
+            pbone.scale = Vector((float(fe_pose_scl[0]), float(fe_pose_scl[1]), float(fe_pose_scl[2]))) \
+                if fe_pose_scl is not None else Vector((1.0, 1.0, 1.0))
 
             applied_count += 1
 
