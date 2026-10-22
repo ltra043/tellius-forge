@@ -2,7 +2,7 @@ bl_info = {
     "name": "Tellius Forge",
     "description": "Fire Emblem 9 & 10 Asset Handler",
     "author": "Jade (ltra043), based on work by Zheneq and ATMachine",
-    "version": (0, 27, 1),
+    "version": (0, 28, 1),
     "blender": (4, 2, 0),
     "location": "File > Import, File > Export",
     "category": "Import-Export",
@@ -713,6 +713,29 @@ def read_skeleton_file(filepath):
                     current[1] - oldest_loc[1],
                     current[2] - oldest_loc[2],
                 )
+
+    # Pass 4 (v0.28.1): convert pose_location into each bone's LOCAL rest frame.
+    #
+    # Passes 1-3 produce pose_location as a displacement along WORLD axes.
+    # That was right in v0.27.1, where every edit bone had a flat (identity)
+    # basis. Since v0.28.0 each bone's edit-bone basis is world_rot, and
+    # Blender interprets pose_bone.location along the bone's OWN rest axes.
+    # So a world-space vector d must become  local = world_rot^T * d.
+    #
+    # Why no ancestor terms are needed: pose rotation is only ever set on
+    # Class A bones (whose world_rot is identity) and rest rotation only on
+    # Class B bones (whose pose rotation is zero), so a rotated rest frame
+    # never meets a pose rotation on the same bone. Head positions therefore
+    # come out identical to v0.27.1 (verified on lord2: max error ~1e-15).
+    for b in bones:
+        loc_w = b.get('pose_location', (0.0, 0.0, 0.0))
+        b['pose_location_world'] = loc_w          # kept for debugging
+        R = b.get('world_rot')
+        if R is None or not any(abs(v) > 1e-9 for v in loc_w):
+            continue
+        b['pose_location'] = tuple(
+            sum(R[r][c] * loc_w[r] for r in range(3)) for c in range(3)
+        )
 
     # Add combined rotation for Class A bones with direct B parent
     # Walk up the ancestor chain, collecting rotations from all B bones
@@ -1512,11 +1535,45 @@ def create_armature(obj_name, bones, armature_data_name=None, skeleton_filepath=
         eb        = edit_bones.new(bone_name)
         eb.head   = Vector(bone['position'])
 
-        # Force all bone tails to +Y direction (rotation=0)
-        # This matches v0-25-1 behavior where all bones had rotation=0
-        eb.tail = eb.head + Vector((0, DEFAULT_LENGTH, 0))
+        # v0.28.0: Orient the edit bone from the bone's accumulated world
+        # rotation (world_rot) instead of always forcing a flat +Y/roll=0
+        # basis.
+        #
+        # world_rot is a 3x3 matrix (row-major) built from Rz*Ry*Rx of the
+        # bone's "joint orient" values (+100/+104/+108), accumulated with
+        # every Class B ancestor's rotation above it. Column 1 of that
+        # matrix is where this bone's local +Y axis points in world space;
+        # column 2 is where local +Z points. Setting the edit bone's tail
+        # along column 1 and aligning roll so local Z matches column 2
+        # makes Blender's own local X/Y/Z axes for this bone match the file
+        # format's rotation matrix exactly -- so a pose_bone.rotation_euler
+        # value (from .ga animation, XYZ order) composes on top of this
+        # rest orientation the same way the game composes an animated
+        # "rotate" on top of a fixed "joint orient".
+        #
+        # For any bone whose world_rot is identity (zero joint orient --
+        # the overwhelming majority of bones, e.g. everything in a
+        # skeleton like 'lord') this reduces exactly to the old +Y /
+        # roll=0 behavior, so this change is a no-op there. It only
+        # changes bones with real joint orient: the 'lord2' leg/arm
+        # replacement chains, 'pegasu' wing chains, and similar.
+        world_rot = bone.get('world_rot')
+        if world_rot is not None:
+            y_axis = Vector((world_rot[0][1], world_rot[1][1], world_rot[2][1]))
+            z_axis = Vector((world_rot[0][2], world_rot[1][2], world_rot[2][2]))
+        else:
+            y_axis = Vector((0.0, 1.0, 0.0))
+            z_axis = Vector((0.0, 0.0, 1.0))
 
-        eb.roll   = 0.0
+        if y_axis.length < 1e-6:
+            y_axis = Vector((0.0, 1.0, 0.0))
+        y_axis.normalize()
+
+        eb.tail = eb.head + y_axis * DEFAULT_LENGTH
+        eb.roll = 0.0
+        if z_axis.length > 1e-6:
+            eb.align_roll(z_axis)
+
         created[idx] = (eb, bone_name)  # Store tuple of (edit_bone, safe_name)
 
     for bone in bones:
