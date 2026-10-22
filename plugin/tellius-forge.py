@@ -2,7 +2,7 @@ bl_info = {
     "name": "Tellius Forge",
     "description": "Fire Emblem 9 & 10 Asset Handler",
     "author": "Jade (ltra043), based on work by Zheneq and ATMachine",
-    "version": (0, 35, 4),
+    "version": (0, 36, 6),      # v0.36.6
     "blender": (5, 0, 0),
     "location": "File > Import, File > Export",
     "category": "Import-Export",
@@ -58,6 +58,129 @@ def fe_sync_bone_hex(armature_obj, bones=None):
             if 'fe_bone_index' in bone:
                 pbone['fe_bone_index'] = int(bone['fe_bone_index'])
             fe_set_bone_id_hex(pbone)
+
+
+
+# =============================================================================
+# BIND POSE = SEED POSE   (v0.36.1, reworked in v0.36.2)
+# =============================================================================
+#
+# Export option for models whose meshes and bones are in the seed pose in Blender (for example after Apply Seed
+# Pose + Apply Pose as Rest Pose).  The bones keep their records, inverse-bind matrices included (so animations,
+# which overwrite the value-block slots, keep working and unchanged bones stay byte-identical).  The game draws a
+# stored vertex of bone b at   M[b] x v_stored   with   M[b] = world_seed[b] (scale taken as 1) x skin[b].
+# M is the identity for most bones, but not for all of them (dragon: 41 of 59 bones; timt: 22 of 174, none of
+# them carrying a vertex).  The meshes in Blender are in the seed pose, so every vertex is un-mapped on export:
+#       v_stored = inverse(A) x v_seed      with  A = sum of w_i * M[bone_i]   (blended: the stored weights)
+# Normals go through the transpose of A's rotation part.  M is read back from the .g that was just written, so
+# it includes any change made to the skeleton in the same export.  Only bones whose M differs from the
+# identity are kept in the map (the 'seed map'); a vertex on any other bone is written exactly as it is.
+
+def fe_bind_world(buf, n, base=0x10):
+    """{bone index: 4x4 bind world matrix}: the chain of the seed matrices with every scale term taken as 1.
+    A bone whose scale term is (1, 1, 1) uses its stored seed matrix; otherwise the local matrix is rebuilt from
+    the value block with scale 1 (the stored matrix of a scale-0 bone is singular)."""
+    loc, par = [], []
+    for i in range(n):
+        o = base + i * BONE_STRIDE
+        par.append(struct.unpack_from('>i', buf, o)[0])
+        flags = struct.unpack_from('>I', buf, o + 12)[0]
+        sc = struct.unpack_from('>3f', buf, o + 64) if (flags & 0x008) else (1.0, 1.0, 1.0)
+        m = np.eye(4)
+        if all(abs(v - 1.0) < 1e-6 for v in sc):
+            m[:3, :] = np.array(struct.unpack_from('>12f', buf, o + 188)).reshape(3, 4)
+        else:
+            R, t = bone_local_affine(struct.unpack_from('>3f', buf, o + 88), struct.unpack_from('>3f', buf, o + 112),
+                                     struct.unpack_from('>3f', buf, o + 100), struct.unpack_from('>3f', buf, o + 76),
+                                     struct.unpack_from('>3f', buf, o + 160), (1.0, 1.0, 1.0),
+                                     struct.unpack_from('>3f', buf, o + 136))
+            m[:3, :3] = np.array(R)
+            m[:3, 3] = np.array(t)
+        loc.append(m)
+    world = {}
+    def get(i, depth=0):
+        if i not in world:
+            p = par[i]
+            world[i] = loc[i] if (p < 0 or p >= n or depth > n) else get(p, depth + 1) @ loc[i]
+        return world[i]
+    for i in range(n):
+        get(i)
+    return world
+
+
+def fe_seed_map_from_g(g_path):
+    """v0.36.2: {bone index: 4x4 M} for every bone of the .g at *g_path* whose M = bind world (scale 1) x
+    inverse-bind is not the identity.  Bones with M = identity are left out: a vertex on them is not changed."""
+    with open(g_path, 'rb') as f:
+        d = f.read()
+    n = struct.unpack_from('>I', d, 8)[0]
+    world = fe_bind_world(d, n)
+    out = {}
+    for i in range(n):
+        inv = np.eye(4)
+        inv[:3, :] = np.array(struct.unpack_from('>12f', d, 0x10 + i * BONE_STRIDE + 16)).reshape(3, 4)
+        m = world[i] @ inv
+        if not np.allclose(m, np.eye(4), atol=1e-5):
+            out[i] = m
+    return out
+
+
+def fe_seed_unmap(co, nrm, weights, seed_map):
+    """v0.36.2: (stored position, stored normal) of a vertex wanted at *co* (normal *nrm*) in the seed pose.
+    *weights* = [(bone index, weight)].  Returned unchanged when no bone of the vertex is in *seed_map*, or when
+    the blended matrix cannot be inverted."""
+    if not seed_map or not weights or not any(b in seed_map for b, _ in weights):
+        return tuple(co), tuple(nrm)
+    tot = sum(w for _, w in weights)
+    if tot <= 0:
+        return tuple(co), tuple(nrm)
+    A = sum((w / tot) * seed_map.get(b, np.eye(4)) for b, w in weights)
+    try:
+        inv = np.linalg.inv(A)
+    except np.linalg.LinAlgError:
+        return tuple(co), tuple(nrm)
+    p = inv @ np.array([co[0], co[1], co[2], 1.0])
+    n = A[:3, :3].T @ np.array([nrm[0], nrm[1], nrm[2]])
+    ln = float(np.linalg.norm(n))
+    return (float(p[0]), float(p[1]), float(p[2])), (tuple(float(x) for x in n / ln) if ln > 1e-12 else tuple(nrm))
+
+
+def fe_seed_unmap_normal(nrm, A):
+    """v0.36.2: a normal (mathutils Vector) un-mapped through the transpose of M's rotation part; *A* is M or None."""
+    if A is None:
+        return nrm
+    n = A[:3, :3].T @ np.array([nrm.x, nrm.y, nrm.z])
+    ln = float(np.linalg.norm(n))
+    return Vector((n / ln).tolist()) if ln > 1e-12 else nrm
+
+
+def fe_seed_unmap_object(obj, seed_map, armature=None):
+    """v0.36.2: ([position per vertex], {vertex index: M}) of a mesh object for a ymu-style export, where every
+    vertex follows ONE bone (the one of its heaviest vertex group).  The positions are the stored ones (un-mapped
+    through M of that bone); {vertex index: M} holds only the vertices that moved, for the normals.  With an empty
+    *seed_map* nothing moves.  The bones are found through the object's Armature modifier, else *armature*."""
+    mesh = obj.data
+    co_list = [tuple(v.co) for v in mesh.vertices]
+    a_of = {}
+    if not seed_map:
+        return co_list, a_of
+    arm = next((m.object for m in obj.modifiers if m.type == 'ARMATURE' and m.object), None) or armature
+    if arm is None:
+        return co_list, a_of
+    bone_of_group = {}
+    for vgi, vg in enumerate(obj.vertex_groups):
+        ab = arm.data.bones.get(vg.name)
+        if ab is not None and 'fe_bone_index' in ab:
+            bone_of_group[vgi] = int(ab['fe_bone_index'])
+    for v in mesh.vertices:
+        ws = [(bone_of_group[g.group], g.weight) for g in v.groups if g.group in bone_of_group and g.weight > 0]
+        if not ws:
+            continue
+        bi = max(ws, key=lambda e: e[1])[0]
+        if bi in seed_map:
+            co_list[v.index] = fe_seed_unmap(co_list[v.index], (0.0, 0.0, 1.0), [(bi, 1.0)], seed_map)[0]
+            a_of[v.index] = seed_map[bi]
+    return co_list, a_of
 
 
 # Mapping from ga channel_type int → pose bone custom property name for B2
@@ -992,6 +1115,236 @@ GA_PREVIEW_TOL_DEG = 0.1
 # UTILITY — SKELETON FILE LOCATOR
 # =============================================================================
 
+# =============================================================================
+# SEED-IMPORT ANIMATION  (v0.36.6)  -  .ga  <->  Blender pose of a baked SEED import
+# =============================================================================
+#
+# A skeleton imported with "Seed pose" (fe_import_mode == 'SEED', see fe_bake_seed_as_rest) rests in the
+# engine's seed pose.  The mesh was baked at  Ws . S . v  (Ws = seed world, S = the bone's inverse bind) and
+# the engine draws  W(t) . S . v,  so the pose each bone needs is a pure model-space delta  W(t) . Ws^-1.
+# Written per bone with  Rest'_b = Ws_b . C_b  (C_b is whatever frame the baked Blender bone has relative
+# to the engine's seed frame; it is read back from Bone.matrix_local, so no stored property is needed):
+#
+#       P_b(t) = C_b^-1 . ( Ls_b^-1 . L_b(t) ) . C_b
+#
+#   Ls   = seed local matrix of the bone (value block, scale forced to 1: the bake leaves scale alone)
+#   L(t) = local matrix with the animation keys written over the value block (scale forced to 1)
+#   P    = the pose basis (location + XYZ Euler rotation) Blender needs
+#
+# seed_import_check.py compares this with the engine's own forward kinematics (1.8e-14 on dragon_wait_N).
+# Rotate pivot keys (channels 12-14) are folded into P here; their curves are NOT kept as extras.
+# Export is the exact inverse:   L(t) = Ls . C . P . C^-1   ->  Rot = JO^-1 . L_rot . RO^-1,
+#                                translate = L_t - offset1 - pivot + L_rot . pivot   (value-block pivot).
+# Scale channels (0-2) are copied unchanged in both directions.
+
+GA_SEED_CHANNELS = (3, 4, 5, 6, 7, 8, 12, 13, 14)
+
+
+def ga_rot4(deg):
+    m = np.eye(4)
+    m[:3, :3] = np.array(euler_deg_to_mat3(deg))
+    return m
+
+
+def ga_trans4(v):
+    m = np.eye(4)
+    m[:3, 3] = v
+    return m
+
+
+def ga_local4(slots, flags):
+    """L = T(translate + offset1) T(p) JO Rot RO T(-p), each term gated by its flag bit, scale forced to 1."""
+    rotate    = slots[3:6]   if flags & 0x010 else (0.0, 0.0, 0.0)
+    translate = np.array(slots[6:9])   if flags & 0x020 else np.zeros(3)
+    orient    = slots[9:12]  if flags & 0x040 else (0.0, 0.0, 0.0)
+    pivot     = np.array(slots[12:15]) if flags & 0x080 else np.zeros(3)
+    offset1   = np.array(slots[18:21]) if flags & 0x200 else np.zeros(3)
+    axis      = slots[24:27] if flags & 0x800 else (0.0, 0.0, 0.0)
+    return (ga_trans4(translate + offset1) @ ga_trans4(pivot) @ ga_rot4(orient) @ ga_rot4(rotate)
+            @ ga_rot4(axis) @ ga_trans4(-pivot))
+
+
+def ga_seed_record(rec):
+    """(43 value-block floats, flags) of a raw 244-byte bone record."""
+    return list(struct.unpack('>43f', rec[64:236])), struct.unpack('>I', rec[12:16])[0]
+
+
+def ga_seed_contexts(arm_obj):
+    """{bone name: context} for every bone that carries its raw record (fe_raw_rec_hex).
+    Context keys: slots, flags, Ls (seed local, unit scale), Lsi, C, Ci.  C = Ws^-1 . Bone.matrix_local."""
+    def rec(b):
+        h = str(b.get('fe_raw_rec_hex', ''))
+        return bytes.fromhex(h) if len(h) == BONE_STRIDE * 2 else None
+    worlds = {}
+
+    def world(b, depth=0):
+        if b.name in worlds:
+            return worlds[b.name]
+        r = rec(b)
+        w = None
+        if r is not None and depth < 1024:
+            slots, flags = ga_seed_record(r)
+            ls = ga_local4(slots, flags)
+            if b.parent is None:
+                w = ls
+            else:
+                wp = world(b.parent, depth + 1)
+                w = None if wp is None else wp @ ls
+        worlds[b.name] = w
+        return w
+
+    out = {}
+    for b in arm_obj.data.bones:
+        w, r = world(b), rec(b)
+        if w is None or r is None:
+            continue
+        slots, flags = ga_seed_record(r)
+        ls = ga_local4(slots, flags)
+        c = np.linalg.inv(w) @ np.array([list(row) for row in b.matrix_local], dtype=float)
+        out[b.name] = {'slots': slots, 'flags': flags, 'Ls': ls, 'Lsi': np.linalg.inv(ls),
+                       'C': c, 'Ci': np.linalg.inv(c)}
+    return out
+
+
+def _ga_seed_flags(ctx, channels, mask=0):
+    flags = ctx['flags'] | (mask & 0x030)
+    if any(3 <= c <= 5 for c in channels):
+        flags |= 0x010
+    if any(6 <= c <= 8 for c in channels):
+        flags |= 0x020
+    return flags
+
+
+def ga_seed_pose_series(ctx, curves, mask=0, extra_out=None, tol_deg=0.1, tol_loc=0.002):
+    """File keys of one bone -> Blender pose keys of a SEED import.
+
+    curves : {file channel: [(frame, value)]} sorted by frame; channels 3-5 in DEGREES, 6-8 and 12-14 in file units
+    mask   : the bone's channel mask from the bone table
+    returns {'rot': {axis: [(frame, radians)]}, 'loc': {axis: [(frame, value)]}} containing only the axes that move.
+    The pose is evaluated at the union of the bone's key frames.  The conversion is not linear in the keys, so
+    wherever linear interpolation of the converted keys misses the true pose by more than tol_deg (rotation) or
+    tol_loc (location), a key is inserted at the worst integer frame; those frames go to *extra_out*."""
+    chans = {c: k for c, k in curves.items() if c in GA_SEED_CHANNELS and k}
+    if not chans:
+        return {'rot': {}, 'loc': {}}
+    flags = _ga_seed_flags(ctx, chans, mask)
+    frames = sorted({f for k in chans.values() for f, _ in k})
+
+    def pose(f):
+        s = list(ctx['slots'])
+        for ch, keys in chans.items():
+            s[ch] = _ga_lin_eval(keys, f)
+        p = ctx['Ci'] @ ctx['Lsi'] @ ga_local4(s, flags) @ ctx['C']
+        return p[:3, 3].copy(), mat3_orthonormal(tuple(tuple(float(x) for x in r) for r in p[:3, :3]))
+
+    pts, prev = {}, (0.0, 0.0, 0.0)
+    for f in frames:
+        loc, R = pose(f)
+        e = mat3_to_euler_deg(R, prev)
+        pts[f] = (loc, e)
+        prev = e
+
+    def refine(f0, f1, depth):
+        if depth > 12 or f1 - f0 < 2:
+            return
+        worst, found = 1.0, None
+        for fm in range(int(f0) + 1, int(f1)):
+            t = (fm - f0) / (f1 - f0)
+            lin_e = tuple(a + (b - a) * t for a, b in zip(pts[f0][1], pts[f1][1]))
+            lin_l = pts[f0][0] + (pts[f1][0] - pts[f0][0]) * t
+            loc, R = pose(fm)
+            err = max(mat3_angle_deg(euler_deg_to_mat3(lin_e), R) / tol_deg, float(np.abs(lin_l - loc).max()) / tol_loc)
+            if err > worst:
+                worst, found = err, (fm, loc, R, lin_e)
+        if found is None:
+            return
+        fm, loc, R, lin_e = found
+        pts[fm] = (loc, mat3_to_euler_deg(R, lin_e))
+        if extra_out is not None:
+            extra_out.add(fm)
+        refine(f0, fm, depth + 1)
+        refine(fm, f1, depth + 1)
+    if extra_out is not None:
+        for f0, f1 in zip(frames, frames[1:]):
+            refine(f0, f1, 0)
+
+    out = {'rot': {}, 'loc': {}}
+    order = sorted(pts)
+    for a in range(3):
+        rv = [(f, math.radians(pts[f][1][a])) for f in order]
+        if any(abs((v + math.pi) % (2.0 * math.pi) - math.pi) > 1e-4 for _, v in rv):
+            out['rot'][a] = rv
+        lv = [(f, float(pts[f][0][a])) for f in order]
+        if any(abs(v) > 1e-5 for _, v in lv):
+            out['loc'][a] = lv
+    return out
+
+
+def ga_seed_file_series(ctx, loc_curves, rot_curves, ref_curves=None, tol_deg=0.02, tol_loc=1e-3):
+    """Exact inverse of ga_seed_pose_series.
+
+    loc_curves : {axis: [(frame, value)]}    Blender pose location keys
+    rot_curves : {axis: [(frame, radians)]}  Blender pose rotation_euler keys
+    ref_curves : {axis: [(frame, radians)]}  the file's own rotate curves, if known (picks the equivalent Euler triple)
+    returns (rot, trans): {axis: [(frame, radians)]} file rotate values, {axis: [(frame, value)]} file translate
+    values; axes that never leave the bone's rest value are left out."""
+    if not loc_curves and not rot_curves:
+        return {}, {}
+    slots, bflags = ctx['slots'], ctx['flags']
+    flags = bflags | 0x030
+    jo = slots[9:12]  if flags & 0x040 else (0.0, 0.0, 0.0)
+    ro = slots[24:27] if flags & 0x800 else (0.0, 0.0, 0.0)
+    pv = np.array(slots[12:15]) if flags & 0x080 else np.zeros(3)
+    of = np.array(slots[18:21]) if flags & 0x200 else np.zeros(3)
+    JO, RO = np.array(euler_deg_to_mat3(jo)), np.array(euler_deg_to_mat3(ro))
+    rest_rot = tuple(slots[3:6]) if bflags & 0x010 else (0.0, 0.0, 0.0)
+    rest_t   = np.array(slots[6:9]) if bflags & 0x020 else np.zeros(3)
+    frames = sorted({f for k in list(loc_curves.values()) + list(rot_curves.values()) for f, _ in k})
+    rot_pts, tr_pts, prev = {}, {}, rest_rot
+    for f in frames:
+        loc = [_ga_lin_eval(loc_curves[a], f) if a in loc_curves else 0.0 for a in range(3)]
+        eul = [math.degrees(_ga_lin_eval(rot_curves[a], f)) if a in rot_curves else 0.0 for a in range(3)]
+        L = ctx['Ls'] @ ctx['C'] @ (ga_trans4(loc) @ ga_rot4(eul)) @ ctx['Ci']
+        Lr = L[:3, :3]
+        Rot = JO.T @ Lr @ RO.T
+        if ref_curves:
+            ref = tuple(math.degrees(_ga_lin_eval(ref_curves[a], f)) if a in ref_curves else rest_rot[a]
+                        for a in range(3))
+        else:
+            ref = prev
+        e = mat3_to_euler_deg(tuple(tuple(float(x) for x in r) for r in Rot), ref)
+        prev = e
+        rot_pts[f] = e
+        tr_pts[f] = L[:3, 3] - of - pv + Lr @ pv
+    rot, trans = {}, {}
+    for a in range(3):
+        degs = [(f, rot_pts[f][a]) for f in frames]
+        if max(abs(v - rest_rot[a]) for _, v in degs) > tol_deg:
+            lsb = 1.0 / (1 << _compute_b2([v for _, v in degs]))
+            rot[a] = [(f, math.radians(v)) for f, v in ga_reduce_keys(degs, lsb)]
+        vals = [(f, float(tr_pts[f][a])) for f in frames]
+        if max(abs(v - rest_t[a]) for _, v in vals) > tol_loc:
+            lsb = 1.0 / (1 << _compute_b2([v for _, v in vals]))
+            trans[a] = ga_reduce_keys(vals, lsb)
+    return rot, trans
+
+
+def _ga_export_seed_series(arm_obj, bone_name, fcurve_lookup, ctx, ref_curves=None):
+    """Blender location / rotation_euler F-curves of a bone of a SEED import -> (rot, trans) in file values.
+    The preview keys the importer inserted (type BREAKDOWN) are ignored."""
+    def read(prop):
+        dp = f'pose.bones["{bone_name}"].{prop}'
+        got = {}
+        for axis in range(3):
+            fc = fcurve_lookup.get((dp, axis))
+            if fc is not None and len(fc.keyframe_points):
+                pts = sorted((kp.co[0], kp.co[1]) for kp in fc.keyframe_points if kp.type != 'BREAKDOWN')
+                if pts:
+                    got[axis] = pts
+        return got
+    return ga_seed_file_series(ctx, read('location'), read('rotation_euler'), ref_curves)
+
+
 def find_skeleton_file(start_path):
     """Search for a skeleton .g beside *start_path* (v0.35.0).
 
@@ -1493,11 +1846,223 @@ def read_g_bone_name_map(filepath):
         return {}, 0
 
 
+def fe_g_bone_names(filepath):
+    """v0.36.3: [bone name of every index] of a .g file (the names as stored in the file), or [] if it cannot be read."""
+    try:
+        with open(filepath, 'rb') as f:
+            raw = f.read()
+        str_off, bone_count, rec_start = struct.unpack('>3I', raw[0x04:0x10])
+        rec_size = (str_off - rec_start) // bone_count
+        pool, pos = {}, str_off
+        while pos < len(raw):
+            try:
+                end = raw.index(0, pos)
+            except ValueError:
+                break
+            name = raw[pos:end].decode('ascii', errors='replace')
+            pool[pos - str_off] = name
+            pos = end + 1
+            if name == '':
+                break
+        out = []
+        for b in range(bone_count):
+            base = rec_start + b * rec_size
+            off = struct.unpack('>I', raw[base + rec_size - 4: base + rec_size])[0]
+            out.append(pool.get(off, f'bone_{b}'))
+        return out
+    except Exception as e:
+        print(f"WARNING: could not read the bone names of '{filepath}': {e}")
+        return []
+
+
+def fe_old_to_new_by_name(ref_path, new_path, expected_count=None):
+    """v0.36.3: {bone index in the reference .g: index of the bone with the SAME NAME in the .g just written}.
+    Used to remap the chunk palettes of the original .gs in hierarchy mode, instead of the fe_original_bone_id
+    properties (a bone first exported without one gets its new index as 'original' id, which can collide with a
+    real original id).  Names that occur more than once in either file are left out.  {} when either file cannot be
+    read, or when the reference does not have *expected_count* bones (it is not the skeleton the .gs was imported with)."""
+    if not ref_path or not new_path:
+        return {}
+    ref, new = fe_g_bone_names(ref_path), fe_g_bone_names(new_path)
+    if not ref or not new:
+        return {}
+    if expected_count is not None and len(ref) != int(expected_count):
+        print(f"  [v0.36.3] reference skeleton has {len(ref)} bones but the body was imported with {expected_count}: "
+              f"not used for the palette remap")
+        return {}
+    from collections import Counter
+    dup = {n for n, c in Counter(ref).items() if c > 1} | {n for n, c in Counter(new).items() if c > 1}
+    where = {n: i for i, n in enumerate(new)}
+    return {i: where[n] for i, n in enumerate(ref) if n in where and n not in dup}
+
+
+def fe_g_record_map(filepath):
+    """v0.36.4: ({raw 244-byte bone record as hex: [indices in the file]}, [bone name of every index]) of a .g file,
+    or ({}, []) if it cannot be read.  A record holds the name offset, so records of bones that share a name differ."""
+    names = fe_g_bone_names(filepath)
+    if not names:
+        return {}, []
+    with open(filepath, 'rb') as f:
+        raw = f.read()
+    str_off, bone_count, rec_start = struct.unpack('>3I', raw[0x04:0x10])
+    rec_size = (str_off - rec_start) // bone_count
+    recs = {}
+    for i in range(bone_count):
+        recs.setdefault(raw[rec_start + i * rec_size: rec_start + (i + 1) * rec_size].hex(), []).append(i)
+    return recs, names
+
+
+def fe_assign_reference_indices(bones_raw, ref_path, ref_bone_count):
+    """v0.36.4: set b['fe_index'] of every bone dict of write_skeleton_file in preserve order (new bones get indices
+    from *ref_bone_count*).  Replaces the v0.36.3 lookup by NAME, which collides when a name occurs twice in the
+    reference (human and dragon 'Hips' in a zu body) and survives neither renaming nor duplicate names.
+      1. record: the bone's stored import record (fe_raw_rec_hex) is a record of the reference .g.  Exact, unique per
+         reference bone, and not changed by renaming.  When several Blender bones carry the same record (a duplicated
+         bone), the one whose name is still the reference name and still its import name keeps the index.
+      2. name: a bone without a matching record takes the reference bone of its name, if that name occurs once in the
+         reference and the reference bone is not taken yet (bones created in Blender have no record).
+      3. new: everything else, appended in the order of *bones_raw*.
+    Returns {'record': n, 'name': [names], 'new': [names]}."""
+    recs, ref_names = fe_g_record_map(ref_path)
+    name_count = Counter(ref_names)
+    unique_idx = {n: i for i, n in enumerate(ref_names) if name_count[n] == 1}
+    for b in bones_raw:
+        b['fe_index'] = None
+    cand = []
+    for order, b in enumerate(bones_raw):
+        for ri in recs.get(str(b.get('raw_rec_hex') or '').lower(), ()):
+            bb = b['blender_bone']
+            cand.append((b['name'] != ref_names[ri], bb.get('fe_import_name') != bb.name, order, ri, b))
+    cand.sort(key=lambda c: c[:4])
+    taken, n_record = set(), 0
+    for _, _, _, ri, b in cand:
+        if b['fe_index'] is None and ri not in taken:
+            b['fe_index'] = ri
+            taken.add(ri)
+            n_record += 1
+    by_name = []
+    for b in bones_raw:
+        if b['fe_index'] is None:
+            ri = unique_idx.get(b['name'])
+            if ri is not None and ri not in taken:
+                b['fe_index'] = ri
+                taken.add(ri)
+                by_name.append(b['name'])
+    new = [b for b in bones_raw if b['fe_index'] is None]
+    next_free = ref_bone_count
+    for b in new:
+        b['fe_index'] = next_free
+        next_free += 1
+    return {'record': n_record, 'name': by_name, 'new': [b['name'] for b in new]}
+
+
+def fe_export_name_of(bone):
+    """v0.36.3: the name write_skeleton_file stores for a Blender bone."""
+    if bone.get('fe_import_name') == bone.name and bone.get('fe_original_name'):
+        return str(bone['fe_original_name'])
+    return bone.name.replace('__', ':')
+
+
+def fe_verify_bone_ids(armature_obj, written_path):
+    """v0.36.4 (was v0.36.3, which skipped every name that occurs twice): [(blender bone, fe_bone_index, problem)] for
+    every bone whose fe_bone_index does not describe its record in the .g just written: index outside the file,
+    index shared with another bone, record slot holding another name, or parent field that is not the fe_bone_index
+    of the bone's Blender parent.  Slots nobody claims are reported as ('(unused slot)', index, name in the file).
+    None if the file cannot be read; an empty list means .g, .gs ids and seed map use one numbering."""
+    names = fe_g_bone_names(written_path)
+    if not names:
+        return None
+    with open(written_path, 'rb') as f:
+        raw = f.read()
+    str_off, n, rec_start = struct.unpack('>3I', raw[0x04:0x10])
+    rec_size = (str_off - rec_start) // n
+    parents = [struct.unpack_from('>i', raw, rec_start + i * rec_size)[0] for i in range(n)]
+    bad, seen = [], {}
+    for ab in armature_obj.data.bones:
+        idx = ab.get('fe_bone_index')
+        if idx is None:
+            continue
+        idx = int(idx)
+        if not 0 <= idx < n:
+            bad.append((ab.name, idx, 'index outside the file'))
+            continue
+        if idx in seen:
+            bad.append((ab.name, idx, f"same index as '{seen[idx]}'"))
+            continue
+        seen[idx] = ab.name
+        want_name = fe_export_name_of(ab)
+        if want_name.startswith('_edit_') and ab.get('fe_original_name'):
+            want_name = str(ab['fe_original_name'])
+        if names[idx] != want_name:
+            bad.append((ab.name, idx, f"slot holds '{names[idx]}'"))
+            continue
+        if ab.parent is None:
+            want_par = -1
+        else:
+            pidx = ab.parent.get('fe_bone_index')
+            want_par = int(pidx) if pidx is not None else None
+        if want_par is not None and parents[idx] != want_par:
+            bad.append((ab.name, idx, f"parent field {parents[idx]}, expected {want_par}"))
+    for i in range(n):
+        if i not in seen:
+            bad.append(('(unused slot)', i, names[i]))
+    return bad
+
+
+def fe_seed_changes_vs_reference(ref_path, new_path, tol=1e-3):
+    """v0.36.3: names of the bones (in both .g files, names unique) whose seed matrix differs from the reference by
+    more than *tol*.  Used to warn when the 'seed pose' option is ticked but the armature may still be in the bind pose."""
+    try:
+        rn, nn = fe_g_bone_names(ref_path), fe_g_bone_names(new_path)
+        if not rn or not nn:
+            return []
+        with open(ref_path, 'rb') as f:
+            rd = f.read()
+        with open(new_path, 'rb') as f:
+            nd = f.read()
+        from collections import Counter
+        dup = {n for n, c in Counter(rn).items() if c > 1} | {n for n, c in Counter(nn).items() if c > 1}
+        where = {n: i for i, n in enumerate(nn)}
+        out = []
+        for i, n in enumerate(rn):
+            if n in dup or n not in where:
+                continue
+            a = struct.unpack_from('>12f', rd, 0x10 + i * BONE_STRIDE + 0x40 + 31 * 4)
+            b = struct.unpack_from('>12f', nd, 0x10 + where[n] * BONE_STRIDE + 0x40 + 31 * 4)
+            if max(abs(x - y) for x, y in zip(a, b)) > tol:
+                out.append(n)
+        return out
+    except Exception as e:
+        print(f"WARNING: seed-pose check skipped: {e}")
+        return []
+
+
+def fe_pool_vs_reference(ref_path, new_path):
+    """v0.36.4: (bytes of the reference string pool, True if the .g just written starts with exactly that pool,
+    bytes appended).  Duplicate names (human and dragon 'Hips') are separate strings in the pool and stay separate:
+    the writer never merges them, so a preserve-order export keeps the reference pool byte for byte and appends
+    the names of new bones.  None if either file cannot be read."""
+    try:
+        with open(ref_path, 'rb') as f:
+            rd = f.read()
+        with open(new_path, 'rb') as f:
+            nd = f.read()
+        rp = rd[struct.unpack_from('>I', rd, 4)[0]:]
+        np_ = nd[struct.unpack_from('>I', nd, 4)[0]:]
+        return len(rp), np_[:len(rp)] == rp, max(0, len(np_) - len(rp))
+    except Exception as e:
+        print(f"WARNING: string pool check skipped: {e}")
+        return None
+
+
 # =============================================================================
 # SKELETON (.g) — WRITING
 # =============================================================================
-def write_skeleton_file(armature_obj, filepath, source_filepath="", append_new_bones=True):
-    """Serialise a Blender Armature back to the .g binary format."""
+def write_skeleton_file(armature_obj, filepath, source_filepath="", append_new_bones=True, bind_is_seed=False):
+    """Serialise a Blender Armature back to the .g binary format.
+
+    v0.36.2: bind_is_seed=True treats the Blender bone heads as seed positions (no bind offset is removed).  The
+    inverse-bind matrices stay as they are; the exporters un-map the meshes through them (see fe_seed_map_from_g)."""
     arm = armature_obj.data
 
     # --- Phase 1: Collect bones, storing Blender parent NAME (not index yet) ---
@@ -1518,7 +2083,7 @@ def write_skeleton_file(armature_obj, filepath, source_filepath="", append_new_b
         pos      = bone.head_local
         # v0.30.2: heads may be in bind space; the placement math below works in
         # seed space, so remove the offset stored at import (0 if absent).
-        _bo = _bind_offset_of(bone)
+        _bo = (0.0, 0.0, 0.0) if bind_is_seed else _bind_offset_of(bone)      # v0.36.1
         pos = Vector((pos.x - _bo[0], pos.y - _bo[1], pos.z - _bo[2]))
         # v0.30.3: a bone that still has its import name is written back under its
         # ORIGINAL name.  (The old blanket '__' -> ':' turned the real names
@@ -1557,48 +2122,17 @@ def write_skeleton_file(armature_obj, filepath, source_filepath="", append_new_b
             b['fe_index'] = i
 
     elif ref_name_to_idx:
-        # Append-new-bones mode with reference: bones matching the reference
-        # keep their original index.  All other bones are treated as new and
-        # assigned indices >= ref_bone_count.
-        # 
-        # Matching priority:
-        # 1. Match by name (original behavior) - for bones that exist in reference
-        # 2. Match by raw_rec_hex presence in reference file - for renamed bones
-        #    (if bone has raw_rec_hex that exists in reference, keep original index)
-        
-        # Build a set of raw_rec_hex values from reference file
-        ref_raw_hex_set = set()
-        if source_filepath and os.path.isfile(source_filepath):
-            ref_bones = read_skeleton_file(source_filepath)
-            for rb in ref_bones:
-                if rb.get('raw_rec_hex'):
-                    ref_raw_hex_set.add(rb['raw_rec_hex'])
-        
-        for b in bones_raw:
-            # First: try matching by name (original behavior)
-            ref_idx = ref_name_to_idx.get(b['name'], None)
-            if ref_idx is not None:
-                b['fe_index'] = ref_idx
-            else:
-                # Second: if bone has raw_rec_hex that exists in reference, it's a renamed bone
-                # Find which index in reference matches this raw_rec_hex
-                b_raw_hex = b.get('raw_rec_hex', '')
-                if b_raw_hex and b_raw_hex in ref_raw_hex_set:
-                    # Find the index in reference
-                    for rb in ref_bones:
-                        if rb.get('raw_rec_hex') == b_raw_hex:
-                            b['fe_index'] = rb['index']
-                            break
-                    else:
-                        b['fe_index'] = None
-                else:
-                    b['fe_index'] = None   # will be assigned below
-
-        new_bones = [b for b in bones_raw if b['fe_index'] is None]
-        next_free = ref_bone_count
-        for b in new_bones:
-            b['fe_index'] = next_free
-            next_free += 1
+        # Append-new-bones mode with reference: bones of the reference keep their original index, all other bones
+        # are new and get indices >= ref_bone_count.
+        # v0.36.4: matched by stored bone record (fe_raw_rec_hex), then by unique name - no longer by name alone
+        # (see fe_assign_reference_indices).  The old name-first lookup is gone.
+        _stats = fe_assign_reference_indices(bones_raw, source_filepath, ref_bone_count)
+        print(f"  [v0.36.4] preserve order: {_stats['record']} bones matched to the reference by record, "
+              f"{len(_stats['name'])} by unique name, {len(_stats['new'])} new")
+        if _stats['name']:
+            print(f"  [v0.36.4] NOTE: matched by name only (no matching record): {_stats['name'][:12]}")
+        if _stats['new']:
+            print(f"  [v0.36.4] new bones: {_stats['new'][:12]}")
 
     else:
         # Append-new-bones mode, no reference: fall back to collision-detection approach.
@@ -1627,6 +2161,27 @@ def write_skeleton_file(armature_obj, filepath, source_filepath="", append_new_b
                 b['fe_index'] = next_free
                 assigned.add(next_free)
                 next_free += 1
+
+    # v0.36.4: refuse to write when the indices are not exactly 0..n-1 (a duplicate or a hole makes the record slots
+    # differ from fe_bone_index, which scrambles the .g and the .gs ids).  Nothing has been changed on the bones yet.
+    _idx_list = sorted(b['fe_index'] for b in bones_raw)
+    if _idx_list != list(range(len(bones_raw))):
+        _cnt = Counter(_idx_list)
+        _dup = sorted(i for i, c in _cnt.items() if c > 1)
+        _hole = sorted(set(range(len(bones_raw))) - set(_cnt))
+        _by_idx = defaultdict(list)
+        for _b in bones_raw:
+            _by_idx[_b['fe_index']].append(_b['blender_name'])
+        _msg = (f"bone indices are not 0..{len(bones_raw) - 1} without gaps: "
+                f"{len(_dup)} index(es) used twice {[(i, _by_idx[i]) for i in _dup[:4]]}, "
+                f"{len(_hole)} index(es) unused {_hole[:8]}.")
+        if not append_new_bones:
+            _msg += " (hierarchy order cannot do this; this is a bug)"
+        else:
+            _msg += (" A bone of the reference skeleton is probably missing or duplicated in the armature; "
+                     "preserve order needs every original bone. Use Blender hierarchy order, or restore the bone.")
+        print(f"  [v0.36.4] ERROR: {_msg}")
+        raise ValueError(_msg)
 
     # --- Phase 3: Resolve parent indices using the finalised name→index map ---
     # v0.30.3: par_name is a BLENDER name, so look it up by Blender name
@@ -1782,6 +2337,19 @@ def write_skeleton_file(armature_obj, filepath, source_filepath="", append_new_b
     # Class B bones adjust translate, Class A bones adjust the pivot; the other half
     # keeps the value in the original record.  A value that moved by <= 1e-4 is kept
     # bit-for-bit so untouched skeletons round-trip unchanged.
+    def _scale_override(bone_dict, current_scale):
+        """v0.36.1: scale from the pose bone's 'fe_seed_pose_scale' when it differs from *current_scale*
+        (the scale slots of the record being written), else None.  A bone without the property keeps its record."""
+        pb = armature_obj.pose.bones.get(bone_dict['blender_bone'].name) if armature_obj.pose else None
+        prop = fe_seed_pose_get(pb, 'scale') if pb is not None else None
+        if prop is None:
+            return None
+        try:
+            new = (float(prop[0]), float(prop[1]), float(prop[2]))
+        except Exception:
+            return None
+        return new if max(abs(new[k] - current_scale[k]) for k in range(3)) > 1e-4 else None
+
     _final = {}
     for _b in bones_sorted:
         _idx = _b['fe_index']
@@ -1799,6 +2367,9 @@ def write_skeleton_file(armature_obj, filepath, source_filepath="", append_new_b
         else:
             _old_s   = (1.0, 1.0, 1.0)
             _old_rot = _old_t = _old_jo = _old_p = _old_ro = _old_o1 = (0.0, 0.0, 0.0)
+        _sov = _scale_override(_b, _old_s)             # v0.36.1: the placement pass sees the new scale too
+        if _sov is not None:
+            _old_s = _sov
         _jo = _old_jo
         _jp = _b['blender_bone'].get('fe_local_rot_deg')
         if _jp is not None:
@@ -1875,7 +2446,7 @@ def write_skeleton_file(armature_obj, filepath, source_filepath="", append_new_b
 
         if pose_bone is not None:
             for con in pose_bone.constraints:
-                if con.type not in _COPY_TYPES:
+                if con.type not in _COPY_TYPES or getattr(con, 'mute', False):     # v0.36.1: muted = off
                     continue
                 tgt_obj    = getattr(con, 'target',    None)
                 tgt_name   = getattr(con, 'subtarget', '')
@@ -1960,6 +2531,17 @@ def write_skeleton_file(armature_obj, filepath, source_filepath="", append_new_b
                 # record gets the relevant fields (and the pre-computed 3x4 matrix)
                 # updated.  This lets users move bones in Blender and have the
                 # changes reflected in the exported skeleton.
+                scale_changed = False
+                _sov = _scale_override(b, struct.unpack_from('>3f', rec, 64))      # v0.36.1
+                if _sov is not None:
+                    struct.pack_into('>3f', rec, 64, *_sov)
+                    _fl = struct.unpack_from('>I', rec, 12)[0]
+                    _fl = (_fl | 0x008) if any(abs(v - 1.0) > 1e-6 for v in _sov) else (_fl & ~0x008)
+                    struct.pack_into('>I', rec, 12, _fl)
+                    b['bone_flags'] = _fl
+                    scale_changed = True
+                    print(f"  [v0.36.1] bone {idx} '{b['name']}': scale -> {tuple(round(v, 4) for v in _sov)}, flags 0x{_fl:X}")
+
                 pos_changed = False
                 if is_b:
                     old_x = struct.unpack_from('>f', rec, 88)[0]
@@ -2010,7 +2592,7 @@ def write_skeleton_file(armature_obj, filepath, source_filepath="", append_new_b
                     print(f"  [DEBUG hair INSIDE] old_rot=({old_rx:.6f}, {old_ry:.6f}, {old_rz:.6f})  current_rot=({current_rot[0]:.6f}, {current_rot[1]:.6f}, {current_rot[2]:.6f})")
                     print(f"  [DEBUG hair INSIDE] pos_changed={pos_changed} rot_changed={rot_changed}")
 
-                if is_new_bone or pos_changed or rot_changed:
+                if is_new_bone or pos_changed or rot_changed or scale_changed:
                     if b['name'] == 'hair':
                         print(f"  [DEBUG hair] ENTERED update block: writing {'B p88' if is_b else 'A p112'}")
                     if is_b:
@@ -2092,6 +2674,19 @@ def write_skeleton_file(armature_obj, filepath, source_filepath="", append_new_b
         rec += pI.pack(name_offsets[idx])  # +240: name offset
 
         assert len(rec) == BONE_STRIDE, f"Bone {idx} record wrong size: {len(rec)}"
+        _sov = _scale_override(b, (1.0, 1.0, 1.0))                  # v0.36.1: scale on a from-scratch bone
+        if _sov is not None:
+            rec = bytearray(rec)
+            struct.pack_into('>3f', rec, 64, *_sov)
+            struct.pack_into('>I', rec, 12, struct.unpack_from('>I', rec, 12)[0] | 0x008)
+            _L = bone_local_affine((0.0, 0.0, 0.0), (wx, wy, wz), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                                   (0.0, 0.0, 0.0), safe_scale(_sov))
+            for _r in range(3):
+                for _c in range(3):
+                    struct.pack_into('>f', rec, 188 + (_r * 4 + _c) * 4, _L[0][_r][_c])
+                struct.pack_into('>f', rec, 188 + (_r * 4 + 3) * 4, _L[1][_r])
+            rec = bytes(rec)
+            print(f"  [v0.36.1] new bone {idx} '{b['name']}': scale -> {tuple(round(v, 4) for v in _sov)}")
         out.append(rec)
 
     out.append(pool)
@@ -2605,6 +3200,17 @@ def import_ga_to_blender(context, ga_data, armature_obj, action_name):
     # v0.31.7: keep the curves we cannot convert (rotate pivot etc.) on the action
     import json as _json_x
     _extras = ga_collect_extra_curves(ga_data, bone_id_to_name)
+    # v0.36.6: seed imports fold the rotate pivot keys (12-14) into location / rotation, so they are not kept
+    seed_mode  = str(arm.get('fe_import_mode', '')) == 'SEED'
+    seed_ctxs  = ga_seed_contexts(arm) if seed_mode else {}
+    if seed_mode:
+        for _nm in list(_extras):
+            if _nm in seed_ctxs:
+                for _ch in ('12', '13', '14'):
+                    _extras[_nm].pop(_ch, None)
+                if not _extras[_nm]:
+                    del _extras[_nm]
+        print(f"  [SEED] seed-pose import: keys are converted with the seed/rest relation of {len(seed_ctxs)} bones")
     if _extras:
         action['ga_extra_curves'] = _json_x.dumps(_extras)
         print(f"  Kept unconverted curves on the action: "
@@ -2675,6 +3281,36 @@ def import_ga_to_blender(context, ga_data, armature_obj, action_name):
 
             _bone_channels.append((channel_type, arr_idx, b2, frames_and_vals, prop_name, data_path))
 
+        # ── v0.36.6: SEED import - location + rotation from  P = C^-1 . Ls^-1 . L(t) . C  (see ga_seed_pose_series) ──
+        _seed_done  = False
+        _seed_extra = set()
+        _sctx = seed_ctxs.get(bone_name) if seed_mode else None
+        if _sctx is not None:
+            _raw_ch = {}
+            for mi in range(bt['meta_start'], bt['meta_start'] + bt['meta_count']):
+                meta = ga_data['metadata'][mi]
+                if meta['channel_type'] in GA_SEED_CHANNELS and meta['num_keyframes'] > 0:
+                    _k = []
+                    for ki in range(meta['num_keyframes']):
+                        if meta['fd_start_idx'] + ki >= len(ga_data['frame_data']):
+                            break
+                        fd = ga_data['frame_data'][meta['fd_start_idx'] + ki]
+                        _k.append((float(fd['frame']), fd['value'] / float(1 << meta['curve_type'])))
+                    if _k:
+                        _raw_ch[meta['channel_type']] = _k
+            if _raw_ch:
+                _b2s = [e[2] for e in _bone_channels if 3 <= e[0] <= 8]
+                _b2_seed = _b2s[0] if _b2s else 15
+                _sconv = ga_seed_pose_series(_sctx, _raw_ch, bt['channel_mask'], _seed_extra, GA_PREVIEW_TOL_DEG)
+                _bone_channels = [e for e in _bone_channels if not 3 <= e[0] <= 8]
+                for ai, vals in sorted(_sconv['rot'].items()):
+                    _bone_channels.append((3 + ai, ai, _b2_seed, vals, 'rotation_euler',
+                                           f'pose.bones["{bone_name}"].rotation_euler'))
+                for ai, vals in sorted(_sconv['loc'].items()):
+                    _bone_channels.append((6 + ai, ai, _b2_seed, vals, 'location',
+                                           f'pose.bones["{bone_name}"].location'))
+                _seed_done = True
+
         # ── Pass 1b (v0.29.0): file translate keys are ABSOLUTE ────────────
         # Convert them to Blender's delta-style 'location' (subtract the rest
         # translate p88, rotate into the bone's own frame, add back the static
@@ -2685,7 +3321,7 @@ def import_ga_to_blender(context, ga_data, armature_obj, action_name):
             if ct in (6, 7, 8):
                 _trans_in[ai] = fv
                 _trans_b2[ai] = cb2
-        if _trans_in:
+        if _trans_in and not _seed_done:
             _rest, _rel, _comp = _ga_bone_translate_frame(arm, bone_name)
             _conv = ga_translate_to_blender(_trans_in, _rest, _rel, _comp)
             _b2_default = next(iter(_trans_b2.values()))
@@ -2705,7 +3341,7 @@ def import_ga_to_blender(context, ga_data, armature_obj, action_name):
             if ct in (3, 4, 5):
                 _rot_in[ai] = fv
                 _rot_b2[ai] = cb2
-        if _rot_in:
+        if _rot_in and not _seed_done:
             _rctx = _ga_bone_rotate_ctx(arm, bone_name)
             if _rctx is not None:
                 _extra_frames = set()
@@ -2730,6 +3366,8 @@ def import_ga_to_blender(context, ga_data, armature_obj, action_name):
                 kp.co        = (frame_num, blender_val)
                 if prop_name == 'rotation_euler' and frame_num in _extra_frames:
                     kp.type = 'BREAKDOWN'    # v0.31.5: inserted for preview accuracy, not in the file
+                if _seed_done and prop_name in ('rotation_euler', 'location') and frame_num in _seed_extra:
+                    kp.type = 'BREAKDOWN'    # v0.36.6: same, for seed imports (location and rotation)
                 # v0.29.0: linear between keys, like the engine (was BEZIER
                 # AUTO_CLAMPED for every curve whose B2 != 15).
                 kp.interpolation = GA_INTERPOLATION
@@ -2959,16 +3597,22 @@ def export_ga_from_blender(armature_obj, action, filepath):
     resolved_b2_map = {}
     # v0.31.5: the file this action came from says which of the equivalent Euler triples to write
     _rot_refs = _ga_rotate_ref_from_raw(raw_orig) if raw_orig is not None else {}
+    # v0.36.6: seed imports go through the exact inverse of ga_seed_pose_series
+    _seed_ctxs = ga_seed_contexts(armature_obj) if str(armature_obj.get('fe_import_mode', '')) == 'SEED' else {}
 
     for bone_id in sorted(bone_id_to_name.keys()):
         bone_name = bone_id_to_name[bone_id]
         # v0.29.0: translate keys go through the exact inverse of the import
         # conversion (Blender delta location -> absolute file value).
-        trans_series = _ga_export_translate_series(armature_obj, bone_name, fcurve_lookup)
-        # v0.31.0: rotate keys of BIND-mode armatures go through the exact inverse of
-        # the import conversion (None = old direct mapping).
-        rot_series = _ga_export_rotate_series(armature_obj, bone_name, fcurve_lookup,
-                                              _rot_refs.get(bone_id))
+        if bone_name in _seed_ctxs:
+            rot_series, trans_series = _ga_export_seed_series(armature_obj, bone_name, fcurve_lookup,
+                                                              _seed_ctxs[bone_name], _rot_refs.get(bone_id))
+        else:
+            trans_series = _ga_export_translate_series(armature_obj, bone_name, fcurve_lookup)
+            # v0.31.0: rotate keys of BIND-mode armatures go through the exact inverse of
+            # the import conversion (None = old direct mapping).
+            rot_series = _ga_export_rotate_series(armature_obj, bone_name, fcurve_lookup,
+                                                  _rot_refs.get(bone_id))
         for channel_type in sorted(_GA_CHANNEL.keys()):
             prop_name, arr_idx, _ = _GA_CHANNEL[channel_type]
             data_path = f'pose.bones["{bone_name}"].{prop_name}'
@@ -5587,7 +6231,7 @@ def gs_corner_colors(mesh):
     return out
 
 
-def gs_collect_addons(verts, addon_objs, chunk_mode='BLENDED', mat_name_mode='ORIGINAL'):
+def gs_collect_addons(verts, addon_objs, chunk_mode='BLENDED', mat_name_mode='ORIGINAL', seed_map=None):
     """v0.34.5: addon meshes -> chunk descriptions for gs_write_composite.  The addon vertices are APPENDED to
     *verts* (indices continue after the main mesh).  One chunk per (mesh, material slot).
     Returns (addons list, problems list)."""
@@ -5606,7 +6250,8 @@ def gs_collect_addons(verts, addon_objs, chunk_mode='BLENDED', mat_name_mode='OR
         base = len(verts)
         for v in mesh.vertices:
             w = [(grp[g.group], g.weight) for g in v.groups if g.group in grp and g.weight > 0]
-            verts.append({'co': tuple(v.co), 'nrm': tuple(v.normal), 'w': w, 'orig': -1})
+            _co, _nrm = fe_seed_unmap(tuple(v.co), tuple(v.normal), w, seed_map)      # v0.36.2: seed pose -> stored
+            verts.append({'co': _co, 'nrm': _nrm, 'w': w, 'orig': -1})
         uvl = mesh.uv_layers.active
         loop_cols = gs_corner_colors(mesh)
         flag_attr = mesh.attributes.get('fe_chunk_color')
@@ -5646,7 +6291,7 @@ def gs_collect_addons(verts, addon_objs, chunk_mode='BLENDED', mat_name_mode='OR
     return addons, problems
 
 
-def gs_collect_composite(mesh_obj, gs, addon_objs=None, chunk_mode='BLENDED', mat_name_mode='ORIGINAL'):
+def gs_collect_composite(mesh_obj, gs, addon_objs=None, chunk_mode='BLENDED', mat_name_mode='ORIGINAL', seed_map=None):
     """Blender mesh -> plain data for gs_write_composite.  Returns (data, problems list)."""
     mesh = mesh_obj.data
     arm = None
@@ -5664,7 +6309,8 @@ def gs_collect_composite(mesh_obj, gs, addon_objs=None, chunk_mode='BLENDED', ma
     origins = gs_vertex_origins(mesh) or [-1] * len(mesh.vertices)     # v0.34.4
     for v in mesh.vertices:
         w = [(bone_of_group[g.group], g.weight) for g in v.groups if g.group in bone_of_group]
-        verts.append({'co': tuple(v.co), 'nrm': tuple(v.normal), 'w': w, 'orig': origins[v.index]})
+        _co, _nrm = fe_seed_unmap(tuple(v.co), tuple(v.normal), w, seed_map)          # v0.36.2: seed pose -> stored
+        verts.append({'co': _co, 'nrm': _nrm, 'w': w, 'orig': origins[v.index]})
     n_orig = len(gs.get('chunk_face_starts', []))
     attr = mesh.attributes.get('fe_chunk_index')
     orig_polys = mesh_obj.get('gs_orig_poly_count', None)
@@ -5693,18 +6339,18 @@ def gs_collect_composite(mesh_obj, gs, addon_objs=None, chunk_mode='BLENDED', ma
         problems.append("the mesh needs an Armature modifier so the vertex groups can be turned into bone indices")
     addons = []
     if addon_objs:
-        addons, more = gs_collect_addons(verts, addon_objs, chunk_mode, mat_name_mode)
+        addons, more = gs_collect_addons(verts, addon_objs, chunk_mode, mat_name_mode, seed_map)
         problems += more
     return {'verts': verts, 'chunks': chunks, 'addons': addons}, problems
 
 
 def export_gs_composite(mesh_obj, filepath, addon_mesh_objs=None, addon_chunk_mode='BLENDED', mat_name_mode='ORIGINAL',
-                        color_mode='BLENDER'):
+                        color_mode='BLENDER', seed_map=None):
     """Composite-body export (v0.34.3; addon meshes v0.34.5).  Returns (True, message) or (False, reason)."""
     import json
     gs = json.loads(str(mesh_obj.get('gs_original_data')))
     raw_orig = bytes.fromhex(gs['file_data_hex'])
-    data, problems = gs_collect_composite(mesh_obj, gs, addon_mesh_objs, addon_chunk_mode, mat_name_mode)
+    data, problems = gs_collect_composite(mesh_obj, gs, addon_mesh_objs, addon_chunk_mode, mat_name_mode, seed_map)
     if problems:
         return False, "; ".join(problems)
     data['color_mode'] = color_mode
@@ -5784,7 +6430,8 @@ def gs_original_chunk_lists(raw, first_chunk_addr, n_chunks):
 
 
 def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BLENDER', append_new_bones=True,
-                           mat_name_mode='ORIGINAL', addon_chunk_mode='BLENDED'):
+                           mat_name_mode='ORIGINAL', addon_chunk_mode='BLENDED', seed_map=None,
+                           ref_skeleton=None, written_skeleton=None):
     """Full-rebuild .gs exporter — v13.
 
     Drives chunk structure from vertex groups, rebuilds display lists and
@@ -5834,7 +6481,7 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
         # v0.34.3: composite (blended) bodies have their own exporter
         return export_gs_composite(mesh_obj, filepath, addon_mesh_objs=addon_mesh_objs,
                                    addon_chunk_mode=addon_chunk_mode, mat_name_mode=mat_name_mode,
-                                   color_mode=vc_mode)
+                                   color_mode=vc_mode, seed_map=seed_map)
 
     # ── Preserved verbatim header regions ────────────────────────────────────
 
@@ -5853,14 +6500,25 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
     uv_scale   = 1 << raw_orig[0x7E]
 
     # ── Dynamically adjust vertex scale to fit all vertices (main + addon) ──
+    # v0.36.2: positions below are the STORED ones.  With a seed_map (meshes in the seed pose) they are un-mapped
+    # through M of each vertex's bone; without one they are the Blender positions, as before.
+    main_co, main_seed_A = fe_seed_unmap_object(mesh_obj, seed_map)
+    _main_arm = next((m_.object for m_ in mesh_obj.modifiers if m_.type == 'ARMATURE' and m_.object), None)
+    addon_unmapped = {}          # addon object name -> (positions, {vertex index: M})
+    for _a in (addon_mesh_objs or []):
+        if _a and _a.type == 'MESH':
+            addon_unmapped[_a.name] = fe_seed_unmap_object(_a, seed_map, _main_arm)
+    if seed_map:
+        print(f"  [v0.36.2] seed pose -> stored: {len(main_seed_A)} of {len(main_co)} main-mesh vertices moved"
+              + "".join(f", {n_}: {len(u_[1])} of {len(u_[0])}" for n_, u_ in addon_unmapped.items()))
     _all_coords = []
-    for v in mesh_obj.data.vertices:
-        _all_coords.extend([abs(v.co.x), abs(v.co.y), abs(v.co.z)])
+    for _c in main_co:
+        _all_coords.extend([abs(_c[0]), abs(_c[1]), abs(_c[2])])
     if addon_mesh_objs:
         for a_obj in addon_mesh_objs:
             if a_obj and a_obj.type == 'MESH':
-                for v in a_obj.data.vertices:
-                    _all_coords.extend([abs(v.co.x), abs(v.co.y), abs(v.co.z)])
+                for _c in addon_unmapped[a_obj.name][0]:
+                    _all_coords.extend([abs(_c[0]), abs(_c[1]), abs(_c[2])])
     if _all_coords:
         max_abs_coord = max(_all_coords)
         if max_abs_coord > 1e-9:
@@ -6536,10 +7194,10 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
     _origins = gs_vertex_origins(mesh) or [-1] * bl_count
     _quant = []
     for i in range(bl_count):
-        co = mesh.vertices[i].co
-        _quant.append((max(-32768, min(32767, round(co.x * vert_scale))),
-                       max(-32768, min(32767, round(co.y * vert_scale))),
-                       max(-32768, min(32767, round(co.z * vert_scale)))))
+        co = main_co[i]                                    # v0.36.2: stored position (un-mapped from the seed pose)
+        _quant.append((max(-32768, min(32767, round(co[0] * vert_scale))),
+                       max(-32768, min(32767, round(co[1] * vert_scale))),
+                       max(-32768, min(32767, round(co[2] * vert_scale)))))
     bl_to_table, table_src = gs_build_vertex_table(_origins, _quant)
     v_count = len(table_src)            # entries in the vertex table (<= number of Blender vertices)
     print(f"\n=== VERTEX COUNT DEBUG ===")
@@ -6572,7 +7230,7 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
     vert_to_nrm_idx = [0] * bl_count   # BLENDER vertex index → normal table index
 
     for i in range(bl_count):
-        n  = mesh.vertices[i].normal
+        n  = fe_seed_unmap_normal(mesh.vertices[i].normal, main_seed_A.get(i))      # v0.36.2: seed pose -> stored
         # v0.35.1: Blender builds normals from the clockwise-wound faces, so they point the other way
         # from the game's (measured on lord: mean dot -0.77 original, +0.70 round trip); write -normal
         nx = max(-128, min(127, round(-n.x * norm_scale)))
@@ -7304,12 +7962,18 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
                 except Exception as e:
                     print(f"    Warning: failed to parse addon gs_original_data: {e}")
 
+            # v0.36.2: addon positions are seed-pose positions; the stored ones were worked out once, at the start
+            # (fe_seed_unmap_object), from the vertex's heaviest bone.  Without a seed_map they are the Blender ones.
+            addon_co, addon_seed_A = addon_unmapped.get(addon_obj.name) or fe_seed_unmap_object(addon_obj, None)
+            if addon_seed_A:
+                print(f"  [v0.36.2] {len(addon_seed_A)} addon vertices of '{addon_obj.name}' moved from seed to stored positions")
+
             # Append vertices to pos_bytes.
             for i in range(len(addon_mesh.vertices)):
-                co = addon_mesh.vertices[i].co
-                x  = max(-32768, min(32767, round(co.x * vert_scale)))
-                y  = max(-32768, min(32767, round(co.y * vert_scale)))
-                z  = max(-32768, min(32767, round(co.z * vert_scale)))
+                co = addon_co[i]
+                x  = max(-32768, min(32767, round(co[0] * vert_scale)))
+                y  = max(-32768, min(32767, round(co[1] * vert_scale)))
+                z  = max(-32768, min(32767, round(co[2] * vert_scale)))
                 pos_bytes += struct.pack('>hhh', x, y, z)
                 pos_min[0] = min(pos_min[0], x)
                 pos_min[1] = min(pos_min[1], y)
@@ -7325,7 +7989,7 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
             for poly in addon_mesh.polygons:
                 for corner, vi in enumerate(poly.vertices):
                     li = poly.loop_start + corner
-                    n  = addon_mesh.loops[li].normal          # v0.35.1: negated, see the main-mesh normals
+                    n  = fe_seed_unmap_normal(addon_mesh.loops[li].normal, addon_seed_A.get(vi))   # v0.36.2; v0.35.1: negated below, see the main-mesh normals
                     nx = max(-128, min(127, round(-n.x * norm_scale)))
                     ny = max(-128, min(127, round(-n.y * norm_scale)))
                     nz = max(-128, min(127, round(-n.z * norm_scale)))
@@ -7525,6 +8189,7 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
                 chunk_face_lists.append({
                     '__addon__': True,
                     'addon_obj': addon_obj,
+                    'addon_co': addon_co,                    # v0.36.2: stored positions
                     'addon_mesh': addon_mesh,
                     'addon_vert_offset': _addon_vert_offset,
                     'addon_loop_uv': addon_loop_uv,
@@ -7568,8 +8233,14 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
     # reference the old indices and must be remapped using the bones'
     # fe_original_bone_id → fe_bone_index mapping.
     if not append_new_bones and armature_obj is not None:
-        old_to_new = {}
-        for ab in armature_obj.data.bones:
+        # v0.36.3: remap by bone NAME when the reference skeleton (the .g the body was imported with) and the .g just
+        # written are known.  The fe_original_bone_id route below is only the fallback: a bone first exported without
+        # that property gets its new index as 'original' id, which can collide with the real original id of another
+        # bone and leave that bone's palette entry unmapped.
+        old_to_new = fe_old_to_new_by_name(ref_skeleton, written_skeleton, mesh_obj.get('gs_orig_bone_count', None))
+        if old_to_new:
+            print(f"  [v0.36.3] palette remap by bone name: {len(old_to_new)} original ids -> ids in the written .g")
+        for ab in (armature_obj.data.bones if not old_to_new else ()):
             old_id = ab.get('fe_original_bone_id')
             new_id = ab.get('fe_bone_index')
             if old_id is not None and new_id is not None:
@@ -7741,8 +8412,8 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
     else:
         # meshes imported before v0.34.0: match by position
         for bl_vi in range(len(mesh.vertices)):
-            co = mesh.vertices[bl_vi].co
-            bl_key = (round(co.x * 1000), round(co.y * 1000), round(co.z * 1000))
+            co = main_co[bl_vi]                                  # v0.36.2: stored position
+            bl_key = (round(co[0] * 1000), round(co[1] * 1000), round(co[2] * 1000))
         
             # Find matching original vertex
             for orig_vi, pos_data in orig_vert_pos_by_idx.items():
@@ -7957,9 +8628,10 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
             gc_bytes = build_gx_cache(chunk_bone_ids)
 
             # AABB from addon faces.
-            a_xs = [addon_mesh.vertices[v].co.x for fi in addon_faces for v in addon_mesh.polygons[fi].vertices]
-            a_ys = [addon_mesh.vertices[v].co.y for fi in addon_faces for v in addon_mesh.polygons[fi].vertices]
-            a_zs = [addon_mesh.vertices[v].co.z for fi in addon_faces for v in addon_mesh.polygons[fi].vertices]
+            _aco = ainfo['addon_co']                       # v0.36.2: stored (un-mapped) positions
+            a_xs = [_aco[v][0] for fi in addon_faces for v in addon_mesh.polygons[fi].vertices]
+            a_ys = [_aco[v][1] for fi in addon_faces for v in addon_mesh.polygons[fi].vertices]
+            a_zs = [_aco[v][2] for fi in addon_faces for v in addon_mesh.polygons[fi].vertices]
             aabb_min = (min(a_xs), min(a_ys), min(a_zs)) if a_xs else (0,0,0)
             aabb_max = (max(a_xs), max(a_ys), max(a_zs)) if a_xs else (0,0,0)
 
@@ -8120,9 +8792,9 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
                 chunk_verts.update(mesh.polygons[fi].vertices)
             
             if chunk_verts:
-                xs = [mesh.vertices[v].co.x for v in chunk_verts]
-                ys = [mesh.vertices[v].co.y for v in chunk_verts]
-                zs = [mesh.vertices[v].co.z for v in chunk_verts]
+                xs = [main_co[v][0] for v in chunk_verts]      # v0.36.2: stored positions
+                ys = [main_co[v][1] for v in chunk_verts]
+                zs = [main_co[v][2] for v in chunk_verts]
                 aabb_min = (min(xs), min(ys), min(zs))
                 aabb_max = (max(xs), max(ys), max(zs))
             else:
@@ -8157,9 +8829,9 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
                 chunk_verts.update(mesh.polygons[fi].vertices)
 
             if chunk_verts:
-                xs = [mesh.vertices[v].co.x for v in chunk_verts]
-                ys = [mesh.vertices[v].co.y for v in chunk_verts]
-                zs = [mesh.vertices[v].co.z for v in chunk_verts]
+                xs = [main_co[v][0] for v in chunk_verts]      # v0.36.2: stored positions
+                ys = [main_co[v][1] for v in chunk_verts]
+                zs = [main_co[v][2] for v in chunk_verts]
                 aabb_min = (min(xs), min(ys), min(zs))
                 aabb_max = (max(xs), max(ys), max(zs))
             else:
@@ -8755,6 +9427,53 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
 # IMPORT OPERATORS
 # =============================================================================
 
+def fe_bake_seed_as_rest(context, arm_obj, mesh_objs):
+    """v0.36.5: turn a BIND import into a SEED import = the Blender workflow 'apply the Armature modifier, then
+    Pose > Apply > Apply Pose as Rest Pose', done right after import.  Each mesh gets the vertex positions it shows
+    in the seed pose (the modifier evaluated), and the armature rest pose becomes the seed pose, so the pose
+    channels are identity.  Only location and rotation are baked: every pose bone is set to scale 1 for the bake
+    (so a seed scale of 0 collapses no geometry), and afterwards each pose bone gets its scale back from
+    'fe_seed_pose_scale'.  The bind->seed location / rotation that were baked are kept in 'fe_baked_seed_location' /
+    'fe_baked_seed_rotation' and 'fe_seed_pose_location' / '_rotation' are set to 0.
+    Sets arm_obj['fe_import_mode'] = 'SEED' and arm_obj['fe_rest_mode'] = 'SEED'."""
+    for pb in arm_obj.pose.bones:
+        pb.scale = (1.0, 1.0, 1.0)
+    context.view_layer.update()
+    dg = context.evaluated_depsgraph_get()
+    n_mesh = 0
+    for mo in mesh_objs:
+        ev  = mo.evaluated_get(dg)
+        tmp = bpy.data.meshes.new_from_object(ev)
+        if len(tmp.vertices) == len(mo.data.vertices):
+            co = np.empty(len(tmp.vertices) * 3, dtype=np.float32)
+            tmp.vertices.foreach_get('co', co)
+            mo.data.vertices.foreach_set('co', co)
+            mo.data.update()
+            n_mesh += 1
+        else:
+            print(f"  [SEED] {mo.name}: vertex count changed by the modifier ({len(mo.data.vertices)} -> "
+                  f"{len(tmp.vertices)}); mesh left in the bind pose")
+        bpy.data.meshes.remove(tmp)
+    for o in context.view_layer.objects:
+        o.select_set(False)
+    arm_obj.select_set(True)
+    context.view_layer.objects.active = arm_obj
+    bpy.ops.object.mode_set(mode='POSE')
+    bpy.ops.pose.armature_apply(selected=False)
+    bpy.ops.object.mode_set(mode='OBJECT')
+    for pb in arm_obj.pose.bones:                       # location / rotation are now the rest pose; scale is restored
+        _l, _r = fe_seed_pose_get(pb, 'location'), fe_seed_pose_get(pb, 'rotation')
+        pb['fe_baked_seed_location'] = tuple(float(v) for v in _l) if _l is not None else (0.0, 0.0, 0.0)
+        pb['fe_baked_seed_rotation'] = tuple(float(v) for v in _r) if _r is not None else (0.0, 0.0, 0.0)
+        pb[SEED_POSE_PROP['location']] = (0.0, 0.0, 0.0)
+        pb[SEED_POSE_PROP['rotation']] = (0.0, 0.0, 0.0)
+        sc = fe_seed_pose_get(pb, 'scale')
+        pb.scale = tuple(float(v) for v in sc) if sc is not None else (1.0, 1.0, 1.0)
+    arm_obj['fe_import_mode'] = 'SEED'
+    arm_obj['fe_rest_mode']   = 'SEED'
+    print(f"  [SEED] seed pose baked into {n_mesh} mesh(es) and the armature rest pose")
+
+
 class ImportGSkeleton(bpy.types.Operator, ImportHelper):
     """Import a Fire Emblem 9/10 .g skeleton file as a Blender Armature"""
     bl_idname  = "import_scene.g_skeleton"
@@ -8767,11 +9486,9 @@ class ImportGSkeleton(bpy.types.Operator, ImportHelper):
     rest_mode: EnumProperty(
         name="Rest pose",
         items=[('BIND', "Bind pose", "Rest the bones in the bind pose, where the mesh was bound (lines up with the .gs mesh); the seed pose is stored in the pose channels"),
-               ('SEED', "Seed pose", "Rest the bones in the seed pose, the skeleton's stored pose")],
+               ('SEED', "Seed pose", "Bake the seed pose: the bones rest in the seed pose and the mesh is moved with them (like Apply Pose as Rest Pose after applying the Armature modifier)")],
         default='BIND',
-        # v0.31.3: hidden from the import dialog; BIND is always used for now.
-        # Remove 'HIDDEN' to show the Bind pose / Seed pose choice again.
-        options={'HIDDEN'},
+        # v0.36.5: shown again.  SEED = BIND import followed by fe_bake_seed_as_rest().
     )
 
     import_as: StringProperty(   # v0.35.4
@@ -8788,12 +9505,16 @@ class ImportGSkeleton(bpy.types.Operator, ImportHelper):
 
     def draw(self, context):          # v0.35.4
         self.layout.prop(self, "import_as")
+        self.layout.prop(self, "rest_mode")      # v0.36.5
 
     def execute(self, context):
         try:
-            bones = read_skeleton_file(self.filepath, self.rest_mode)
+            bones = read_skeleton_file(self.filepath, 'BIND')      # v0.36.5: SEED = BIND + bake
             name  = self.import_as.strip() or os.path.splitext(os.path.basename(self.filepath))[0]
-            create_armature(name, bones, skeleton_filepath=self.filepath, rest_mode=self.rest_mode)
+            arm_obj = create_armature(name, bones, skeleton_filepath=self.filepath, rest_mode='BIND')
+            arm_obj['fe_import_mode'] = 'BIND'
+            if self.rest_mode == 'SEED':
+                fe_bake_seed_as_rest(context, arm_obj, [])
             self.report({'INFO'}, f"Imported skeleton: {len(bones)} bones")
             return {'FINISHED'}
         except Exception as e:
@@ -8873,11 +9594,9 @@ class ImportGSWithSkeleton(bpy.types.Operator, ImportHelper):
     rest_mode: EnumProperty(
         name="Rest pose",
         items=[('BIND', "Bind pose", "Rest the bones in the bind pose, where the mesh was bound (lines up with the mesh); the seed pose is stored in the pose channels"),
-               ('SEED', "Seed pose", "Rest the bones in the seed pose, the skeleton's stored pose")],
+               ('SEED', "Seed pose", "Bake the seed pose: the bones rest in the seed pose and the mesh is moved with them (like Apply Pose as Rest Pose after applying the Armature modifier)")],
         default='BIND',
-        # v0.31.3: hidden from the import dialog; BIND is always used for now.
-        # Remove 'HIDDEN' to show the Bind pose / Seed pose choice again.
-        options={'HIDDEN'},
+        # v0.36.5: shown again.  SEED = BIND import followed by fe_bake_seed_as_rest().
     )
 
     merge_materials: BoolProperty(   # v0.32.1
@@ -8905,6 +9624,7 @@ class ImportGSWithSkeleton(bpy.types.Operator, ImportHelper):
     def draw(self, context):          # v0.32.2
         layout = self.layout
         layout.prop(self, "import_as")
+        layout.prop(self, "rest_mode")      # v0.36.5
         layout.label(text="Ctrl+click a .tpl next to the .gs to load its textures")
         layout.prop(self, "merge_materials")
 
@@ -8933,7 +9653,7 @@ class ImportGSWithSkeleton(bpy.types.Operator, ImportHelper):
 
             bones = None
             if skel_path and os.path.isfile(skel_path):
-                bones = read_skeleton_file(skel_path, self.rest_mode)
+                bones = read_skeleton_file(skel_path, 'BIND')      # v0.36.5: SEED = BIND + bake
 
             md       = read_gs_file(gs_path, bones=bones)
             
@@ -8961,7 +9681,8 @@ class ImportGSWithSkeleton(bpy.types.Operator, ImportHelper):
 
             if bones is not None:
                 arm_obj = create_armature(model_name, bones, skeleton_filepath=skel_path,
-                                          rest_mode=self.rest_mode)
+                                          rest_mode='BIND')
+                arm_obj['fe_import_mode'] = 'BIND'      # v0.36.5
                 apply_skin_weights(mesh_obj, arm_obj,
                                    md.get('skin_weights', {}), bones,
                                    skin_multi=md.get('skin_multi'))
@@ -8973,6 +9694,8 @@ class ImportGSWithSkeleton(bpy.types.Operator, ImportHelper):
                 # exporter can find the main body mesh.
                 mesh_obj['gs_armature_name'] = arm_obj.name
                 arm_obj['gs_main_mesh_name'] = mesh_obj.name
+                if self.rest_mode == 'SEED':      # v0.36.5
+                    fe_bake_seed_as_rest(context, arm_obj, [mesh_obj])
                 skinned = len(md.get('skin_weights', {}))
                 self.report({'INFO'},
                     f"Imported '{model_name}': {len(md['vertices'])} verts + {len(bones)}-bone armature. "
@@ -9225,12 +9948,21 @@ class ExportGSMesh(bpy.types.Operator, ExportHelper):
         default='ORIGINAL',
     )
 
+    bind_is_seed: BoolProperty(   # v0.36.2
+        name="Meshes and bones are in the seed pose (scale excepted)",
+        description="The mesh in Blender is in the seed pose; every vertex is moved back to the position the game "
+                    "stores. The bone matrices are read from the skeleton .g the armature was imported from. "
+                    "Off: previous behaviour",
+        default=False,
+    )
+
     def draw(self, context):
         layout = self.layout
         layout.label(text="Vertex Colors:")
         layout.prop(self, "vertex_color_mode", expand=True)
         layout.label(text="Material names:")
         layout.prop(self, "material_names", expand=True)
+        layout.prop(self, "bind_is_seed")
 
     def execute(self, context):
         print(">>> EXPORTGS MESH EXECUTE CALLED <<<")
@@ -9242,10 +9974,25 @@ class ExportGSMesh(bpy.types.Operator, ExportHelper):
             self.report({'ERROR'},
                 "This mesh has no gs_original_data — import it with this plugin first.")
             return {'CANCELLED'}
+        seed_map = None                       # v0.36.2: see ExportFromArmature
+        if self.bind_is_seed:
+            _arm = next((m_.object for m_ in obj.modifiers if m_.type == 'ARMATURE' and m_.object), None)
+            _g = _arm.get('fe_skeleton_filepath') if _arm is not None else None
+            if not _g or not os.path.isfile(str(_g)):
+                self.report({'ERROR'}, "The seed-pose option needs the skeleton .g the model was imported with: the "
+                                       "mesh needs an Armature modifier whose armature remembers its .g file path.")
+                return {'CANCELLED'}
+            try:
+                seed_map = fe_seed_map_from_g(str(_g))
+            except Exception as e:
+                self.report({'ERROR'}, f"Could not read '{_g}': {e}")
+                return {'CANCELLED'}
+            print(f"  [v0.36.2] seed pose -> stored, M from '{_g}': bones {sorted(seed_map)}")
         try:
             ok, msg = export_gs_full_rebuild(obj, self.filepath,
                                              vc_mode=self.vertex_color_mode,
-                                             mat_name_mode=self.material_names)
+                                             mat_name_mode=self.material_names,
+                                             seed_map=seed_map)
             if ok:
                 self.report({'INFO'}, f"Exported mesh: {msg}")
                 return {'FINISHED'}
@@ -9311,6 +10058,11 @@ class ExportGSkeleton(bpy.types.Operator, ExportHelper):
         ref_skel = None
         if self.source_g_filepath and os.path.isfile(self.source_g_filepath):
             ref_skel = self.source_g_filepath
+        if self.bone_order == 'REFERENCE' and ref_skel is None:      # v0.36.3: never fall back silently
+            self.report({'ERROR'}, f"'Preserve original bone order' needs the reference skeleton, but "
+                                   f"'{self.source_g_filepath}' was not found. Set the reference .g in the dialog, "
+                                   f"or switch to Blender hierarchy order.")
+            return {'CANCELLED'}
         
         try:
             ok = write_skeleton_file(obj, self.filepath,
@@ -9647,6 +10399,15 @@ class ExportFromArmature(bpy.types.Operator, ExportHelper):
         default='ORIGINAL',
     )
 
+    bind_is_seed: BoolProperty(   # v0.36.1, reworked in v0.36.2
+        name="Meshes and bones are in the seed pose (scale excepted)",
+        description="The bones and meshes in Blender are in the seed pose. Bone heads are taken as seed positions, "
+                    "the bone records (inverse-bind matrices included) are kept, and every mesh vertex is moved back "
+                    "from the seed pose to the position the game stores (all scales taken as 1). Bone flags, values "
+                    "and animations are untouched. Off: previous behaviour",
+        default=False,
+    )
+
     addon_chunk_type: EnumProperty(   # v0.34.5
         name="Addon chunks (composite bodies):",
         description="How addon meshes are stored in a composite (zu) body",
@@ -9785,6 +10546,7 @@ class ExportFromArmature(bpy.types.Operator, ExportHelper):
         layout.prop(self, "material_names", expand=True)
         layout.label(text="Addon chunks (composite bodies):")
         layout.prop(self, "addon_chunk_type", expand=True)
+        layout.prop(self, "bind_is_seed")
 
     def execute(self, context):
         arm_obj, err = fe_resolve_export_armature(context)      # v0.35.4
@@ -9855,17 +10617,54 @@ class ExportFromArmature(bpy.types.Operator, ExportHelper):
         ref_skel = None
         if self.source_g_filepath and os.path.isfile(self.source_g_filepath):
             ref_skel = self.source_g_filepath
+        if self.bone_order == 'REFERENCE' and ref_skel is None:      # v0.36.3: never fall back silently
+            self.report({'ERROR'}, f"'Preserve original bone order' needs the reference skeleton, but "
+                                   f"'{self.source_g_filepath}' was not found. Set the reference .g in the dialog, "
+                                   f"or switch to Blender hierarchy order.")
+            return {'CANCELLED'}
 
         # Step 1: export skeleton.
         try:
             write_skeleton_file(arm_obj, g_out, source_filepath=ref_skel,
-                                append_new_bones=(self.bone_order == 'REFERENCE'))
+                                append_new_bones=(self.bone_order == 'REFERENCE'),
+                                bind_is_seed=self.bind_is_seed)
         except Exception as e:
             self.report({'ERROR'}, f"Skeleton export failed: {e}")
             import traceback; traceback.print_exc()
             return {'CANCELLED'}
 
+        # v0.36.3: the .g, the .gs ids and the seed map must use one numbering - check it on the file just written.
+        _bad_ids = fe_verify_bone_ids(arm_obj, g_out)
+        if _bad_ids:
+            print(f"  [v0.36.4] WARNING: {len(_bad_ids)} bones have an fe_bone_index that does not match their record in the written .g: "
+                  f"{_bad_ids[:10]}")
+            self.report({'WARNING'}, f"{len(_bad_ids)} bones: fe_bone_index differs from the written .g (see console)")
+        if ref_skel and self.bone_order == 'REFERENCE':               # v0.36.4: pool fidelity report
+            _pool = fe_pool_vs_reference(ref_skel, g_out)
+            if _pool:
+                if _pool[1]:
+                    print(f"  [v0.36.4] string pool: reference pool ({_pool[0]} bytes) reproduced byte for byte, "
+                          f"{_pool[2]} bytes appended for new bones")
+                else:
+                    print(f"  [v0.36.4] NOTE: string pool differs from the reference pool ({_pool[0]} bytes): a bone "
+                          f"of the reference was renamed or removed")
+        if self.bind_is_seed and ref_skel:
+            _moved = fe_seed_changes_vs_reference(ref_skel, g_out)
+            if _moved:
+                print(f"  [v0.36.3] NOTE: {len(_moved)} bones have a seed matrix that differs from the reference .g: {_moved[:12]}")
+                self.report({'WARNING'}, f"Seed pose option: {len(_moved)} bones differ from the reference skeleton. If "
+                                         f"you did not move them, the armature is probably still in the bind pose "
+                                         f"(Apply Seed Pose, then Pose as Rest, before exporting).")
+
         # Step 2: export body with addon meshes.
+        seed_map = None                       # v0.36.2: bones whose M = seed world x inverse-bind is not the identity
+        if self.bind_is_seed:
+            try:
+                seed_map = fe_seed_map_from_g(g_out)
+                print(f"  [v0.36.2] seed pose -> stored: M differs from the identity on bones {sorted(seed_map)}")
+            except Exception as e:
+                self.report({'ERROR'}, f"Could not read the exported skeleton back: {e}")
+                return {'CANCELLED'}
         try:
             ok, msg = export_gs_full_rebuild(
                 main_obj, gs_out,
@@ -9874,6 +10673,9 @@ class ExportFromArmature(bpy.types.Operator, ExportHelper):
                 append_new_bones=(self.bone_order == 'REFERENCE'),
                 mat_name_mode=self.material_names,
                 addon_chunk_mode=self.addon_chunk_type,
+                seed_map=seed_map,
+                ref_skeleton=ref_skel,
+                written_skeleton=g_out,
             )
             if ok:
                 addon_note = f" + {len(addon_objs)} addon mesh(es)" if addon_objs else ""
@@ -10035,7 +10837,8 @@ class FE_OT_ApplySeedPose(bpy.types.Operator):
     bl_idname = "pose.apply_seed_pose"
     bl_label = "Apply Seed Pose (FE9 & FE10)"
     bl_description = ("Set the selected pose bones to their seed pose (fe_seed_pose_location / "
-                      "_rotation / _scale).  Clearing the pose shows the bind pose instead")
+                      "_rotation / _scale).  Clearing the pose shows the bind pose instead.  On a skeleton imported "
+                      "as Seed pose: location and rotation 0, scale = fe_seed_pose_scale")
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
@@ -10044,9 +10847,18 @@ class FE_OT_ApplySeedPose(bpy.types.Operator):
             self.report({'WARNING'}, "No pose bones selected")
             return {'CANCELLED'}
 
+        seed_import = str(context.object.get('fe_import_mode', '')) == 'SEED'      # v0.36.5
         applied_count = 0
         skipped_count = 0
         for pbone in selected_pose_bones:
+            if seed_import:
+                seed_scl = fe_seed_pose_get(pbone, 'scale')
+                pbone.rotation_mode  = 'XYZ'
+                pbone.location       = Vector((0.0, 0.0, 0.0))
+                pbone.rotation_euler = Euler((0.0, 0.0, 0.0), 'XYZ')
+                pbone.scale          = Vector([float(v) for v in seed_scl]) if seed_scl is not None else Vector((1.0, 1.0, 1.0))
+                applied_count += 1
+                continue
             # Seed-pose custom properties (v0.33.1 names; the pre-v0.33.1 fe_pose_* names are read too)
             seed_loc = fe_seed_pose_get(pbone, 'location')
             seed_rot = fe_seed_pose_get(pbone, 'rotation')
