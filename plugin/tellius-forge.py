@@ -2,7 +2,7 @@ bl_info = {
     "name": "Tellius Forge",
     "description": "Fire Emblem 9 & 10 Asset Handler",
     "author": "Jade (ltra043), based on work by Zheneq and ATMachine",
-    "version": (0, 31, 7),
+    "version": (0, 32, 4),
     "blender": (4, 2, 0),
     "location": "File > Import, File > Export",
     "category": "Import-Export",
@@ -23,6 +23,7 @@ import bpy
 import struct
 import os
 import math
+import numpy as np          # v0.32.0 (TPL decoding); bundled with Blender
 from collections import defaultdict, Counter
 from bpy.props import StringProperty, BoolProperty, IntProperty, EnumProperty
 from bpy_extras.io_utils import ImportHelper, ExportHelper
@@ -3984,6 +3985,303 @@ def read_gs_file(filepath, bones=None):
 
 
 # =============================================================================
+# TPL TEXTURES  (v0.32.0)   ===== TPL-BLOCK BEGIN =====
+# =============================================================================
+#
+# Decodes the images of a GameCube/Wii .tpl texture library and builds the
+# Blender image + shader connections for the body's materials.
+#
+# HOW THE BODY FILE NAMES ITS TEXTURES (strong evidence, 6 images in 4 files checked):
+#   every material of the .gs carries one TPL info block whose byte +5 is the
+#   index of the image inside the .tpl.  read_gs_file() stores it as
+#   material['tpl_blocks'][n]['tpl_idx'] and create_blender_mesh() as the custom
+#   property 'fe_tpl_index' on the Blender material.  Several materials can use
+#   different images of the same .tpl (fighter2_n: lambert28 -> 0, bg -> 1).
+#
+# DECODER: written from the public GX texture format description (not from KLG's code).
+#   Only CMPR (format 14) is implemented - the format of every character texture seen so far.
+#   Other formats are skipped with a printed warning.
+#
+# IMAGE ORIENTATION: TPL row 0 is the TOP of the picture.  Blender's pixel buffer starts at the
+#   BOTTOM, so the decoded rows are reversed before they are stored.  The result looks exactly
+#   like the PNG a viewer exports from the same .tpl (the importer already flips V on the UVs).
+#
+# Custom properties written:
+#   material['fe_original_material_name'], material['fe_material_slot']   (export uses the name)
+#   image['fe_tpl_path'], image['fe_tpl_index']
+
+TPL_MAGIC = 0x0020AF30
+TPL_FORMAT_CMPR = 14
+TPL_WRAP_TO_BLENDER = {0: 'EXTEND', 1: 'REPEAT', 2: 'MIRROR'}   # GX clamp / repeat / mirror
+FE_TEXTURE_NODE_NAME = 'FE Texture'
+
+
+def tpl_read_info(data):
+    """Image headers of a .tpl as a list of dicts (index, width, height, format, data_addr, wrap_s, wrap_t, ...)."""
+    magic, count, table = struct.unpack('>III', data[:12])
+    if magic != TPL_MAGIC:
+        raise ValueError(f"not a TPL file (magic 0x{magic:08X})")
+    infos = []
+    for i in range(count):
+        header, palette = struct.unpack('>II', data[table + 8 * i: table + 8 * i + 8])
+        h, w, fmt, addr, wrap_s, wrap_t, min_f, mag_f = struct.unpack('>HHIIIIII', data[header: header + 28])
+        infos.append({'index': i, 'width': w, 'height': h, 'format': fmt, 'data_addr': addr,
+                      'wrap_s': wrap_s, 'wrap_t': wrap_t, 'min_filter': min_f,
+                      'mag_filter': mag_f, 'palette': palette})
+    return infos
+
+
+def tpl_decode_cmpr(data, addr, width, height):
+    """CMPR (S3TC-like) -> uint8 array (height, width, 4), row 0 = top of the picture.
+
+    The data is 8x8-pixel tiles of 32 bytes; each tile holds four 4x4 blocks in the order
+    top-left, top-right, bottom-left, bottom-right.  A block is two RGB565 colours (big endian)
+    and sixteen 2-bit indices (first pixel in the highest bits).  colour0 > colour1: four opaque
+    colours (2/3-1/3 mixes); otherwise three colours (midpoint) and index 3 = transparent."""
+    bx, by = (width + 7) // 8, (height + 7) // 8
+    size = bx * by * 32
+    if addr + size > len(data):
+        raise ValueError("image data runs past the end of the file")
+    t = np.frombuffer(data, dtype=np.uint8, count=size, offset=addr).reshape(by, bx, 4, 8).astype(np.uint32)
+    c0 = (t[..., 0] << 8) | t[..., 1]
+    c1 = (t[..., 2] << 8) | t[..., 3]
+    bits = (t[..., 4] << 24) | (t[..., 5] << 16) | (t[..., 6] << 8) | t[..., 7]
+
+    def rgb(c):                                    # 5/6/5 bits -> 8 bits by bit replication
+        r, g, b = (c >> 11) & 31, (c >> 5) & 63, c & 31
+        return np.stack(((r << 3) | (r >> 2), (g << 2) | (g >> 4), (b << 3) | (b >> 2)), -1).astype(np.int32)
+
+    p0, p1 = rgb(c0), rgb(c1)
+    four = (c0 > c1)[..., None]
+    p2 = np.where(four, (2 * p0 + p1) // 3, (p0 + p1) // 2)
+    p3 = np.where(four, (p0 + 2 * p1) // 3, 0)
+    pal = np.zeros(c0.shape + (4, 4), dtype=np.uint8)           # (by, bx, block, index, rgba)
+    pal[..., 0, :3], pal[..., 1, :3], pal[..., 2, :3], pal[..., 3, :3] = p0, p1, p2, p3
+    pal[..., :3, 3] = 255
+    pal[..., 3, 3] = np.where(four[..., 0], 255, 0)
+    shifts = np.arange(30, -1, -2, dtype=np.uint32)
+    idx = ((bits[..., None] >> shifts) & 3).astype(np.intp)      # (by, bx, block, 16)
+    px = np.take_along_axis(pal, idx[..., None], axis=3)         # (by, bx, block, 16, rgba)
+    px = px.reshape(by, bx, 2, 2, 4, 4, 4).transpose(0, 2, 4, 1, 3, 5, 6)   # by, sub_y, y, bx, sub_x, x, rgba
+    return np.ascontiguousarray(px.reshape(by * 8, bx * 8, 4)[:height, :width])
+
+
+def tpl_decode_image(data, info):
+    """Decode one image of the .tpl -> uint8 (height, width, 4), top row first."""
+    if info['format'] == TPL_FORMAT_CMPR:
+        return tpl_decode_cmpr(data, info['data_addr'], info['width'], info['height'])
+    raise ValueError(f"image format {info['format']} is not supported yet (only CMPR = 14)")
+
+
+def tpl_png_bytes(rgba):
+    """uint8 (h, w, 4) top row first -> PNG file bytes (no Pillow needed)."""
+    import zlib
+    h, w = rgba.shape[:2]
+    raw = b''.join(b'\x00' + rgba[y].tobytes() for y in range(h))
+    def chunk(tag, body):
+        return struct.pack('>I', len(body)) + tag + body + struct.pack('>I', zlib.crc32(tag + body) & 0xFFFFFFFF)
+    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 6, 0, 0, 0))
+            + chunk(b'IDAT', zlib.compress(raw, 6)) + chunk(b'IEND', b''))
+
+
+def tpl_make_image(data, info, image_name, tpl_path=''):
+    """Decode one TPL image into a new packed Blender image.
+
+    v0.32.1: the colour space and alpha mode are set BEFORE the pixels are written.  Changing them on
+    a generated image afterwards makes Blender throw its buffer away, and the image comes back black
+    (hypothesis for the all-black images seen with v0.32.0; the read-back checks below detect it).
+    If the pixels do not survive (checked before and after packing), the image is rebuilt by loading
+    a temporary PNG and packing that."""
+    rgba = tpl_decode_image(data, info)
+    w, h = info['width'], info['height']
+    expected = (rgba[::-1].astype(np.float32) / 255.0).ravel()      # Blender rows start at the bottom
+
+    def intact(image):
+        buf = np.empty(w * h * 4, dtype=np.float32)
+        image.pixels.foreach_get(buf)
+        return float(np.abs(buf - expected).max()) < 0.01
+
+    img = bpy.data.images.new(image_name, w, h, alpha=True)
+    img.colorspace_settings.name = 'sRGB'
+    img.alpha_mode = 'STRAIGHT'
+    img.pixels.foreach_set(expected)
+    img.update()
+    ok = intact(img)
+    if ok:
+        try:
+            img.pack()
+        except Exception as e:
+            print(f"  [TPL] could not pack '{img.name}' into the .blend: {e}")
+        ok = intact(img)
+    if not ok:
+        print(f"  [TPL] pixels of '{image_name}' did not survive; rebuilding through a temporary PNG")
+        bpy.data.images.remove(img)
+        path = os.path.join(bpy.app.tempdir, f"fe_tpl_{image_name}.png")
+        with open(path, 'wb') as f:
+            f.write(tpl_png_bytes(rgba))
+        img = bpy.data.images.load(path, check_existing=False)
+        img.name = image_name
+        img.alpha_mode = 'STRAIGHT'
+        img.pack()
+        if not intact(img):
+            print(f"  [TPL] WARNING: '{image_name}' still does not match the decoded data")
+    img['fe_tpl_path'] = tpl_path
+    img['fe_tpl_index'] = info['index']
+    return img
+
+
+def fe_material_texture_node(material):
+    """The Image Texture node of a material (the 'FE Texture' node if present, else the first one)."""
+    if material is None or not material.use_nodes or material.node_tree is None:
+        return None
+    nodes = material.node_tree.nodes
+    node = nodes.get(FE_TEXTURE_NODE_NAME)
+    if node is not None and node.type == 'TEX_IMAGE':
+        return node
+    return next((n for n in nodes if n.type == 'TEX_IMAGE'), None)
+
+
+def fe_connect_texture(material, image, info=None):
+    """Put *image* in the material's Image Texture node and link Color -> Principled Base Color and
+    Alpha -> Mix Shader Fac (links that already exist are left alone)."""
+    material.use_nodes = True
+    nt = material.node_tree
+    tex = fe_material_texture_node(material)
+    if tex is None:
+        tex = nt.nodes.new(type='ShaderNodeTexImage')
+        tex.name = tex.label = FE_TEXTURE_NODE_NAME
+        tex.location = (-400, 0)
+    tex.image = image
+    tex.interpolation = 'Linear'
+    if info is not None:
+        try:
+            tex.extension = TPL_WRAP_TO_BLENDER.get(info['wrap_s'], 'REPEAT')
+        except TypeError:                          # e.g. 'MIRROR' missing in this Blender build
+            tex.extension = 'REPEAT'
+    principled = next((n for n in nt.nodes if n.type == 'BSDF_PRINCIPLED'), None)
+    mix = next((n for n in nt.nodes if n.type == 'MIX_SHADER'), None)
+    if principled is not None and not principled.inputs['Base Color'].is_linked:
+        nt.links.new(tex.outputs['Color'], principled.inputs['Base Color'])
+    if mix is not None and not mix.inputs['Fac'].is_linked:
+        nt.links.new(tex.outputs['Alpha'], mix.inputs['Fac'])
+    return tex
+
+
+def fe_import_tpl_images(tpl_path, game_materials, base_name=''):
+    """Create the Blender images the body's materials need.
+    game_materials : read_gs_file()['materials'].   Returns {tpl_idx: (image, info)}."""
+    try:
+        with open(tpl_path, 'rb') as f:
+            data = f.read()
+        infos = tpl_read_info(data)
+    except Exception as e:
+        print(f"  [TPL] cannot read '{tpl_path}': {e}")
+        return {}
+    stem = base_name or os.path.splitext(os.path.basename(tpl_path))[0]
+    wanted = []
+    for m in game_materials:
+        blocks = m.get('tpl_blocks') or []
+        if len(blocks) > 1:
+            print(f"  [TPL] WARNING: material '{m['name']}' has {len(blocks)} texture blocks; "
+                  f"only the first (image {blocks[0]['tpl_idx']}) is used")
+        if blocks and blocks[0]['tpl_idx'] not in wanted:
+            wanted.append(blocks[0]['tpl_idx'])
+    out = {}
+    for idx in wanted:
+        if idx >= len(infos):
+            print(f"  [TPL] WARNING: the body wants image {idx} but '{os.path.basename(tpl_path)}' "
+                  f"has only {len(infos)} image(s)")
+            continue
+        try:
+            out[idx] = (tpl_make_image(data, infos[idx], f"{stem}_{idx}", tpl_path), infos[idx])
+            print(f"  [TPL] image {idx}: {infos[idx]['width']}x{infos[idx]['height']} decoded")
+        except Exception as e:
+            print(f"  [TPL] WARNING: image {idx} skipped: {e}")
+    return out
+
+
+def fe_apply_tpl_to_materials(materials, tpl_path):
+    """Read *tpl_path* and (re)assign the images to already imported materials.
+    Used by the 'import texture to a body' operator.  A material that already has an image made
+    by this plugin gets it replaced (the old datablock is removed when nothing else uses it and the
+    new image takes its name).  Returns (materials updated, images created)."""
+    with open(tpl_path, 'rb') as f:
+        data = f.read()
+    infos = tpl_read_info(data)
+    stem = os.path.splitext(os.path.basename(tpl_path))[0]
+    by_idx = {}
+    for mat in materials:
+        idx = mat.get('fe_tpl_index')
+        if idx is not None:
+            by_idx.setdefault(int(idx), []).append(mat)
+    n_mats = n_imgs = 0
+    for idx, mats in sorted(by_idx.items()):
+        if idx >= len(infos):
+            print(f"  [TPL] WARNING: image {idx} not in '{os.path.basename(tpl_path)}' ({len(infos)} images)")
+            continue
+        old = None
+        for mat in mats:
+            node = fe_material_texture_node(mat)
+            if node is not None and node.image is not None and 'fe_tpl_index' in node.image:
+                old = node.image
+                break
+        try:
+            img = tpl_make_image(data, infos[idx], f"{stem}_{idx}", tpl_path)
+        except Exception as e:
+            print(f"  [TPL] WARNING: image {idx} skipped: {e}")
+            continue
+        for mat in mats:
+            fe_connect_texture(mat, img, infos[idx])
+            n_mats += 1
+        print(f"  [TPL] image {idx}: {infos[idx]['width']}x{infos[idx]['height']} -> "
+              f"{', '.join(m.name for m in mats)}" + (f" (replaced '{old.name}')" if old is not None else ""))
+        if old is not None and old.users == 0:
+            old_name = old.name
+            bpy.data.images.remove(old)
+            img.name = old_name
+        n_imgs += 1
+    return n_mats, n_imgs
+
+
+def fe_find_existing_material(game_name):
+    """An already loaded material that stands for the game material *game_name* (same Blender name, or
+    imported earlier under a .001-style name), or None.  Used by the 'merge with existing materials' option."""
+    mat = bpy.data.materials.get(game_name)
+    if mat is not None:
+        return mat
+    return next((m for m in bpy.data.materials if m.get('fe_original_material_name') == game_name), None)
+
+
+def fe_material_export_name(blmat, mode='ORIGINAL', fallback=''):
+    """Name the exporter uses for a Blender material: the name stored at import
+    ('fe_original_material_name') when mode == 'ORIGINAL', otherwise the current Blender name."""
+    if blmat is None:
+        return fallback
+    if mode == 'ORIGINAL':
+        orig = blmat.get('fe_original_material_name')
+        if orig:
+            return str(orig)
+    return blmat.name
+
+def fe_pick_gs_and_tpl(filepath, files):
+    """v0.32.2: the import dialog is a file browser, so a .tpl can be picked in it together with the .gs
+    (Ctrl+click).  Returns (gs_path, tpl_path); either is '' when no such file was selected."""
+    folder = os.path.dirname(filepath)
+    names = [f.name for f in files] if files else [os.path.basename(filepath)]
+    gs = [n for n in names if n.lower().endswith('.gs')]
+    tpl = [n for n in names if n.lower().endswith('.tpl')]
+    if len(gs) > 1:
+        print(f"  [IMPORT] {len(gs)} .gs files selected; importing '{gs[0]}' only")
+    gs_path = os.path.join(folder, gs[0]) if gs else ''
+    if len(tpl) > 1:
+        print(f"  [IMPORT] {len(tpl)} .tpl files selected; using '{tpl[0]}' only")
+    tpl_path = os.path.join(folder, tpl[0]) if tpl else ''
+    return gs_path, tpl_path
+
+# ===== TPL-BLOCK END =====
+
+
+# =============================================================================
 # MATERIAL SHADER SETUP — UTILITY
 # =============================================================================
 #
@@ -4022,6 +4320,7 @@ def setup_shader_tree(material, mix_factor=None):
     
     # Create nodes
     img_tex = nodes.new(type='ShaderNodeTexImage')
+    img_tex.name = img_tex.label = FE_TEXTURE_NODE_NAME   # v0.32.0
     transparent = nodes.new(type='ShaderNodeBsdfTransparent')
     principled = nodes.new(type='ShaderNodeBsdfPrincipled')
     mix_shader = nodes.new(type='ShaderNodeMixShader')
@@ -4064,7 +4363,7 @@ def setup_shader_tree(material, mix_factor=None):
 #     in gs_original_data for the patch-in-place exporter.
 #   - v19.2 addition: Calls setup_shader_tree for newly created materials.
 
-def create_blender_mesh(name, mesh_data):
+def create_blender_mesh(name, mesh_data, tpl_path='', merge_materials=False):
     """Create a Blender mesh object from parsed .gs data."""
     import json
     print(f"\n=== CREATING MESH '{name}' ===")
@@ -4202,26 +4501,56 @@ def create_blender_mesh(name, mesh_data):
 
     # ── Create Blender materials ───────────────────────────────────────────────
     game_materials = mesh_data.get('materials', [])
-    for mat_info in game_materials:
+    # v0.32.0-4: materials.  Default = a NEW material per game material (Blender adds .001 etc. on a name
+    # clash).  merge_materials=True reuses a loaded material of the same game name instead.
+    # A .tpl chosen at import is applied to ALL of this model's materials after the loop: new materials
+    # get the image wired in; reused materials get their image REPLACED (same name, no .001 copies).
+    # Without a .tpl a reused material keeps whatever texture it has.
+    reused = {}
+    if merge_materials:
+        for mat_slot, mat_info in enumerate(game_materials):
+            found = fe_find_existing_material(mat_info['name'])
+            if found is not None:
+                reused[mat_slot] = found
+    model_mats = []
+    for mat_slot, mat_info in enumerate(game_materials):
         mat_name = mat_info['name']
-        mat = bpy.data.materials.get(mat_name)
-        if mat is None:
+        is_new = mat_slot not in reused
+        if is_new:
             mat = bpy.data.materials.new(name=mat_name)
             setup_shader_tree(mat)
+        else:
+            mat = reused[mat_slot]
+            print(f"  [MAT] slot {mat_slot}: reusing material '{mat.name}'")
+        if 'fe_original_material_name' not in mat:
+            mat['fe_original_material_name'] = mat_name
+            mat['fe_material_slot'] = mat_slot
 
         rgba = mat_info.get('diffuse_rgba', [204, 204, 204, 255])
-        if hasattr(mat, 'diffuse_color') and len(rgba) >= 4:
+        if is_new and hasattr(mat, 'diffuse_color') and len(rgba) >= 4:
             mat.diffuse_color = tuple(c / 255.0 for c in rgba[:4])
 
         tpl_blocks = mat_info.get('tpl_blocks', [])
         if tpl_blocks:
-            mat['fe_tpl_index'] = tpl_blocks[0]['tpl_idx']
+            if is_new or tpl_path or 'fe_tpl_index' not in mat:
+                mat['fe_tpl_index'] = tpl_blocks[0]['tpl_idx']
             if len(tpl_blocks) > 1:
                 mat['fe_tpl_indices'] = json.dumps(
                     [t['tpl_idx'] for t in tpl_blocks]
                 )
+                if tpl_path:
+                    print(f"  [TPL] WARNING: material '{mat_name}' has {len(tpl_blocks)} texture blocks; "
+                          f"only the first (image {tpl_blocks[0]['tpl_idx']}) is used")
+        model_mats.append(mat)
 
         obj.data.materials.append(mat)
+
+    if tpl_path and model_mats:        # v0.32.4: wire in / replace the images (see the comment above)
+        try:
+            n_mats, n_imgs = fe_apply_tpl_to_materials(model_mats, tpl_path)
+            print(f"  [TPL] {n_imgs} image(s) applied to {n_mats} material(s)")
+        except Exception as e:
+            print(f"  [TPL] WARNING: texture import failed: {e}")
 
     # ── Assign UVs, material indices, and build loop_uv_indices in one pass ───
     #
@@ -4709,7 +5038,8 @@ def export_gs_file(mesh_obj, filepath):
 #   [String pool        null-terminated ASCII strings]
 #   [Relocation table   4 bytes × K entries, sorted ascending]
 
-def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BLENDER', append_new_bones=True):
+def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BLENDER', append_new_bones=True,
+                           mat_name_mode='ORIGINAL'):
     """Full-rebuild .gs exporter — v13.
 
     Drives chunk structure from vertex groups, rebuilds display lists and
@@ -4874,12 +5204,18 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
     tpl_seq_idx  = 0    # running counter: next TPL slot to assign
     materials_out = []
     for mi, blmat in enumerate(mesh.materials):
-        blmat_name = blmat.name if blmat else f'material_{mi}'
+        blmat_name = fe_material_export_name(blmat, mat_name_mode, f'material_{mi}')   # v0.32.0
 
-        if blmat_name in orig_mat_by_name:
+        # v0.32.4: the original data is found through the stored game name even when the CURRENT
+        # (renamed, .001-style) name is what gets written, so a rename never turns the material into a "new" one.
+        data_key = blmat.get('fe_original_material_name') if blmat is not None else None
+        if data_key not in orig_mat_by_name:
+            data_key = blmat_name
+        if data_key in orig_mat_by_name:
             # Existing material — carry original data over exactly and advance
             # the counter past however many TPL blocks this material owns.
-            mat = dict(orig_mat_by_name[blmat_name])
+            mat = dict(orig_mat_by_name[data_key])
+            mat['name'] = blmat_name
             tpl_seq_idx += len(mat['tpl_blocks'])
             materials_out.append(mat)
         else:
@@ -4923,7 +5259,7 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
             for amat in addon_mesh_data.materials:
                 if amat is None:
                     continue
-                amat_name = amat.name
+                amat_name = fe_material_export_name(amat, mat_name_mode)   # v0.32.0
                 if amat_name in existing_names:
                     continue
                 tex_node_count = 0
@@ -6866,7 +7202,7 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
                 print(f"  [Addon] Chunk {ci}: first face material_index = {poly_mat_idx}")
             
             if poly_mat_idx is not None and poly_mat_idx < len(addon_mesh.materials) and addon_mesh.materials[poly_mat_idx]:
-                amat_name = addon_mesh.materials[poly_mat_idx].name
+                amat_name = fe_material_export_name(addon_mesh.materials[poly_mat_idx], mat_name_mode)   # v0.32.0
                 print(f"  [Addon] Chunk {ci}: addon mesh material at slot {poly_mat_idx} = '{amat_name}'")
                 # Find in materials_out by name
                 found = False
@@ -6881,7 +7217,7 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
                 print(f"  [Addon] Chunk {ci}: final addon_mat_idx = {addon_mat_idx}")
             elif addon_mesh.materials:
                 # Fallback to first material slot
-                amat_name = addon_mesh.materials[0].name if addon_mesh.materials[0] else 'unknown'
+                amat_name = fe_material_export_name(addon_mesh.materials[0], mat_name_mode, 'unknown')   # v0.32.0
                 for mi, m in enumerate(materials_out):
                     if m['name'] == amat_name:
                         addon_mat_idx = mi
@@ -7653,13 +7989,33 @@ class ImportGSMesh(bpy.types.Operator, ImportHelper):
     bl_options = {'PRESET', 'UNDO'}
 
     filename_ext = ".gs"
-    filter_glob: StringProperty(default="*.gs", options={'HIDDEN'})
+    filter_glob: StringProperty(default="*.gs;*.tpl", options={'HIDDEN'})
+
+    merge_materials: BoolProperty(   # v0.32.1
+        name="Merge with existing materials",
+        description="Reuse materials already in this .blend that have the same game name instead of creating new ones "
+                    "(useful for duplicate imports of one model that should share textures)",
+        default=False,
+    )
+
+    files: bpy.props.CollectionProperty(type=bpy.types.OperatorFileListElement,
+                                        options={'HIDDEN', 'SKIP_SAVE'})   # v0.32.2
+
+    def draw(self, context):          # v0.32.2
+        layout = self.layout
+        layout.label(text="Ctrl+click a .tpl next to the .gs to load its textures")
+        layout.prop(self, "merge_materials")
 
     def execute(self, context):
         try:
-            md   = read_gs_file(self.filepath)
-            name = os.path.splitext(os.path.basename(self.filepath))[0]
-            mesh_obj = create_blender_mesh(name, md)
+            gs_path, tpl_path = fe_pick_gs_and_tpl(self.filepath, self.files)
+            if not gs_path:
+                self.report({'ERROR'}, "Select a .gs file (a .tpl alone cannot be imported here).")
+                return {'CANCELLED'}
+            md   = read_gs_file(gs_path)
+            name = os.path.splitext(os.path.basename(gs_path))[0]
+            mesh_obj = create_blender_mesh(name, md, tpl_path=tpl_path,
+                                          merge_materials=self.merge_materials)
             self.report({'INFO'},
                 f"Imported: {len(md['vertices'])} verts, {len(md['faces'])} faces, "
                 f"{len(md['materials'])} materials")
@@ -7677,7 +8033,7 @@ class ImportGSWithSkeleton(bpy.types.Operator, ImportHelper):
     bl_options = {'PRESET', 'UNDO'}
 
     filename_ext = ".gs"
-    filter_glob: StringProperty(default="*.gs", options={'HIDDEN'})
+    filter_glob: StringProperty(default="*.gs;*.tpl", options={'HIDDEN'})
 
     rest_mode: EnumProperty(
         name="Rest pose",
@@ -7689,10 +8045,29 @@ class ImportGSWithSkeleton(bpy.types.Operator, ImportHelper):
         options={'HIDDEN'},
     )
 
+    merge_materials: BoolProperty(   # v0.32.1
+        name="Merge with existing materials",
+        description="Reuse materials already in this .blend that have the same game name instead of creating new ones "
+                    "(useful for duplicate imports of one model that should share textures)",
+        default=False,
+    )
+
+    files: bpy.props.CollectionProperty(type=bpy.types.OperatorFileListElement,
+                                        options={'HIDDEN', 'SKIP_SAVE'})   # v0.32.2
+
+    def draw(self, context):          # v0.32.2
+        layout = self.layout
+        layout.label(text="Ctrl+click a .tpl next to the .gs to load its textures")
+        layout.prop(self, "merge_materials")
+
     def execute(self, context):
         try:
-            folder = os.path.dirname(self.filepath)
-            stem   = os.path.splitext(os.path.basename(self.filepath))[0]
+            gs_path, tpl_path = fe_pick_gs_and_tpl(self.filepath, self.files)
+            if not gs_path:
+                self.report({'ERROR'}, "Select a .gs file (a .tpl alone cannot be imported here).")
+                return {'CANCELLED'}
+            folder = os.path.dirname(gs_path)
+            stem   = os.path.splitext(os.path.basename(gs_path))[0]
 
             candidates = [
                 os.path.join(folder, 'skeleton.g'),
@@ -7712,15 +8087,15 @@ class ImportGSWithSkeleton(bpy.types.Operator, ImportHelper):
             if skel_path and os.path.isfile(skel_path):
                 bones = read_skeleton_file(skel_path, self.rest_mode)
 
-            md       = read_gs_file(self.filepath, bones=bones)
+            md       = read_gs_file(gs_path, bones=bones)
             
             # Determine naming based on body filename
             # If body file is "body.gs", use grandparent directory as model_name
-            basename = os.path.basename(self.filepath)
+            basename = os.path.basename(gs_path)
             if basename.lower() == 'body.gs':
                 # Use grandparent (great-grandparent?) directory name
                 # e.g., "pegasus/pack/body.gs" -> "pegasus"
-                parent_dir = os.path.dirname(self.filepath)
+                parent_dir = os.path.dirname(gs_path)
                 grandparent_dir = os.path.dirname(parent_dir)
                 model_name = os.path.basename(grandparent_dir)
             else:
@@ -7728,7 +8103,8 @@ class ImportGSWithSkeleton(bpy.types.Operator, ImportHelper):
                 model_name = stem
             
             # Create mesh with "_body" suffix
-            mesh_obj = create_blender_mesh(model_name + '_body', md)
+            mesh_obj = create_blender_mesh(model_name + '_body', md, tpl_path=tpl_path,
+                                          merge_materials=self.merge_materials)
 
             if bones is not None:
                 arm_obj = create_armature(model_name, bones, skeleton_filepath=skel_path,
@@ -7758,6 +8134,53 @@ class ImportGSWithSkeleton(bpy.types.Operator, ImportHelper):
             self.report({'ERROR'}, f"Import failed: {e}")
             import traceback; traceback.print_exc()
             return {'CANCELLED'}
+
+
+# ===== TPL-OPERATOR BEGIN (v0.32.0) =====
+class FE_OT_ImportTPLToBody(bpy.types.Operator, ImportHelper):
+    """Read a .tpl texture library and assign its images to the materials of the selected body
+    (or of the body that uses the selected armature); images made earlier by this plugin are replaced"""
+    bl_idname  = "import_scene.fe_tpl_to_body"
+    bl_label   = "Import .tpl Texture to Selected Body"
+    bl_options = {'UNDO'}
+
+    filename_ext = ".tpl"
+    filter_glob: StringProperty(default="*.tpl", options={'HIDDEN'})
+
+    def execute(self, context):
+        objs = list(context.selected_objects)
+        if context.active_object is not None and context.active_object not in objs:
+            objs.append(context.active_object)
+        meshes = []
+        for o in objs:
+            found = [o] if o.type == 'MESH' else (_get_armature_meshes(o) if o.type == 'ARMATURE' else [])
+            meshes += [m for m in found if m not in meshes]
+        mats = []
+        for m in meshes:
+            for mat in m.data.materials:
+                if mat is not None and mat.get('fe_tpl_index') is not None and mat not in mats:
+                    mats.append(mat)
+        if not mats:
+            self.report({'ERROR'}, "Select an imported body mesh (or its armature): no materials with a TPL index found.")
+            return {'CANCELLED'}
+        try:
+            n_mats, n_imgs = fe_apply_tpl_to_materials(mats, self.filepath)
+        except Exception as e:
+            self.report({'ERROR'}, f"Texture import failed: {e}")
+            import traceback; traceback.print_exc()
+            return {'CANCELLED'}
+        if n_mats == 0:
+            self.report({'WARNING'}, "No texture was applied (see the console for details).")
+            return {'CANCELLED'}
+        print(f"  [TPL] applied {n_imgs} image(s) to {n_mats} material(s) from '{os.path.basename(self.filepath)}'")
+        self.report({'INFO'}, f"Applied {n_imgs} image(s) to {n_mats} material(s)")
+        return {'FINISHED'}
+
+
+def _menu_tpl_import(self, context):
+    self.layout.operator(FE_OT_ImportTPLToBody.bl_idname,
+                         text=f"FE9 & FE10 Texture to selected Body {plugin_version} (.tpl)")
+# ===== TPL-OPERATOR END =====
 
 
 class ImportGAnimation(bpy.types.Operator, ImportHelper):
@@ -7923,10 +8346,20 @@ class ExportGSMesh(bpy.types.Operator, ExportHelper):
         default='BLENDER',
     )
 
+    material_names: EnumProperty(   # v0.32.0
+        name="Material names:",
+        description="Which material name is written to the .gs",
+        items=[('ORIGINAL', "Original (game) names", "Use the name stored at import, ignoring Blender's .001 suffixes"),
+               ('CURRENT', "Current Blender names", "Use the material's current name in Blender")],
+        default='ORIGINAL',
+    )
+
     def draw(self, context):
         layout = self.layout
         layout.label(text="Vertex Colors:")
         layout.prop(self, "vertex_color_mode", expand=True)
+        layout.label(text="Material names:")
+        layout.prop(self, "material_names", expand=True)
 
     def execute(self, context):
         print(">>> EXPORTGS MESH EXECUTE CALLED <<<")
@@ -7940,7 +8373,8 @@ class ExportGSMesh(bpy.types.Operator, ExportHelper):
             return {'CANCELLED'}
         try:
             ok, msg = export_gs_full_rebuild(obj, self.filepath,
-                                             vc_mode=self.vertex_color_mode)
+                                             vc_mode=self.vertex_color_mode,
+                                             mat_name_mode=self.material_names)
             if ok:
                 self.report({'INFO'}, f"Exported mesh: {msg}")
                 return {'FINISHED'}
@@ -8301,6 +8735,14 @@ class ExportFromArmature(bpy.types.Operator, ExportHelper):
         default='BLENDER',
     )
 
+    material_names: EnumProperty(   # v0.32.0
+        name="Material names:",
+        description="Which material name is written to the .gs",
+        items=[('ORIGINAL', "Original (game) names", "Use the name stored at import, ignoring Blender's .001 suffixes"),
+               ('CURRENT', "Current Blender names", "Use the material's current name in Blender")],
+        default='ORIGINAL',
+    )
+
     # Per-instance state set in invoke, read in draw/execute.
     # Can't use CollectionProperty easily with ExportHelper, so we serialise
     # the checklist as a compact string stored on the operator instance.
@@ -8427,6 +8869,8 @@ class ExportFromArmature(bpy.types.Operator, ExportHelper):
         layout.separator()
         layout.label(text="Vertex Colors:")
         layout.prop(self, "vertex_color_mode", expand=True)
+        layout.label(text="Material names:")
+        layout.prop(self, "material_names", expand=True)
 
     def execute(self, context):
         arm_obj = context.active_object
@@ -8514,6 +8958,7 @@ class ExportFromArmature(bpy.types.Operator, ExportHelper):
                 addon_mesh_objs=addon_objs if addon_objs else None,
                 vc_mode=self.vertex_color_mode,
                 append_new_bones=(self.bone_order == 'REFERENCE'),
+                mat_name_mode=self.material_names,
             )
             if ok:
                 addon_note = f" + {len(addon_objs)} addon mesh(es)" if addon_objs else ""
@@ -8788,6 +9233,7 @@ def register():
     bpy.utils.register_class(ImportGSkeleton)
     bpy.utils.register_class(ImportGSWithSkeleton)
     bpy.utils.register_class(ImportGAnimation)
+    bpy.utils.register_class(FE_OT_ImportTPLToBody)   # v0.32.0
     bpy.utils.register_class(ExportGSMesh)
     bpy.utils.register_class(ExportGSkeleton)
     bpy.utils.register_class(ExportFromArmature)
@@ -8803,6 +9249,7 @@ def register():
     bpy.types.TOPBAR_MT_file_import.append(_menu_skel_import)
     bpy.types.TOPBAR_MT_file_import.append(_menu_both)
     bpy.types.TOPBAR_MT_file_import.append(_menu_anim_import)
+    bpy.types.TOPBAR_MT_file_import.append(_menu_tpl_import)   # v0.32.0
     bpy.types.TOPBAR_MT_file_export.append(_menu_mesh_export)
     bpy.types.TOPBAR_MT_file_export.append(_menu_skel_export)
     bpy.types.TOPBAR_MT_file_export.append(_menu_from_armature)
@@ -8817,6 +9264,7 @@ def unregister():
     bpy.utils.unregister_class(ImportGSkeleton)
     bpy.utils.unregister_class(ImportGSWithSkeleton)
     bpy.utils.unregister_class(ImportGAnimation)
+    bpy.utils.unregister_class(FE_OT_ImportTPLToBody)   # v0.32.0
     bpy.utils.unregister_class(ExportGSMesh)
     bpy.utils.unregister_class(ExportGSkeleton)
     bpy.utils.unregister_class(ExportFromArmature)
@@ -8832,6 +9280,7 @@ def unregister():
     bpy.types.TOPBAR_MT_file_import.remove(_menu_skel_import)
     bpy.types.TOPBAR_MT_file_import.remove(_menu_both)
     bpy.types.TOPBAR_MT_file_import.remove(_menu_anim_import)
+    bpy.types.TOPBAR_MT_file_import.remove(_menu_tpl_import)   # v0.32.0
     bpy.types.TOPBAR_MT_file_export.remove(_menu_mesh_export)
     bpy.types.TOPBAR_MT_file_export.remove(_menu_skel_export)
     bpy.types.TOPBAR_MT_file_export.remove(_menu_from_armature)
