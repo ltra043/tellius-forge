@@ -2,7 +2,7 @@ bl_info = {
     "name": "Tellius Forge",
     "description": "Fire Emblem 9 & 10 Asset Handler",
     "author": "Jade (ltra043), based on work by Zheneq and ATMachine",
-    "version": (0, 32, 4),
+    "version": (0, 33, 1),
     "blender": (4, 2, 0),
     "location": "File > Import, File > Export",
     "category": "Import-Export",
@@ -45,6 +45,27 @@ CONSTRAINT_CHANNELS = {
     'COPY_LOCATION':   [6, 7, 8],
     'COPY_SCALE':      [0, 1, 2],
 }
+
+# v0.33.1: names of the pose-bone custom properties that hold the SEED POSE (the pose-bone
+# location / rotation in degrees / scale that take a bone from the bind pose to the seed pose).
+# Blends saved before v0.33.1 hold the same data under the old names fe_pose_*; they are still read.
+SEED_POSE_PROP = {'location': 'fe_seed_pose_location',
+                  'rotation': 'fe_seed_pose_rotation',
+                  'scale':    'fe_seed_pose_scale'}
+_SEED_POSE_PROP_LEGACY = {'location': 'fe_pose_location',
+                          'rotation': 'fe_pose_rotation',
+                          'scale':    'fe_pose_scale'}
+
+
+def fe_seed_pose_get(pbone, kind):
+    """Seed-pose value of a pose bone ('location', 'rotation' (degrees) or 'scale'), or None.
+    Reads the v0.33.1 property first, then the pre-v0.33.1 name."""
+    for key in (SEED_POSE_PROP[kind], _SEED_POSE_PROP_LEGACY[kind]):
+        v = pbone.get(key)
+        if v is not None:
+            return v
+    return None
+
 
 # Default Mix Shader factor for newly created materials
 DEFAULT_MIX_SHADER_FACTOR = 0.5
@@ -390,7 +411,7 @@ def _unwrap_euler(values_rad):
 # WHY THIS EXISTS
 #   .ga keys are ABSOLUTE: a translate key REPLACES the bone's stored translate
 #   slot (file offset +88, "p88"; zero on Class A bones, the local offset on
-#   Class B bones).  Blender's pose 'location' is a DELTA from the rest pose,
+#   Class B bones).  Blender's pose 'location' is a DELTA from the bind pose,
 #   measured along the bone's own rest axes.  Two corrections are needed:
 #
 #     1. subtract the rest value            d  = T_anim - p88
@@ -399,8 +420,8 @@ def _unwrap_euler(values_rad):
 #        relative rest rotation 'rel' (parent_rest^-1 * bone_rest).
 #                                           l  = rel^T * d
 #
-#   The bone may also carry a static pose_location ('comp', set at skeleton
-#   import to compensate for the naive-vs-true rest positions).  An F-curve on
+#   The bone may also carry a static seed-pose location ('comp' = fe_seed_pose_location, set at
+#   skeleton import; it carries the bone from the bind pose to the seed pose).  An F-curve on
 #   'location' overwrites that static value, so it is added back:
 #
 #        l(frame) = rel^T * (T_anim(frame) - p88) + comp
@@ -890,8 +911,9 @@ def _ga_bone_translate_frame(arm_obj, bone_name):
         rel = [list(r) for r in ga_translate_rel_bind(Srp, Mt)]
         comp = (0.0, 0.0, 0.0)
         pb = arm_obj.pose.bones.get(bone_name)
-        if pb is not None and 'fe_pose_location' in pb:
-            comp = tuple(float(v) for v in pb['fe_pose_location'])
+        _sl = fe_seed_pose_get(pb, 'location') if pb is not None else None
+        if _sl is not None:
+            comp = tuple(float(v) for v in _sl)
         return rest, rel, comp
     if bone.parent is not None:
         pm = bone.parent.matrix_local.to_3x3()
@@ -906,8 +928,9 @@ def _ga_bone_translate_frame(arm_obj, bone_name):
     rel = [[m[r][c] for c in range(3)] for r in range(3)]
     comp = (0.0, 0.0, 0.0)
     pb = arm_obj.pose.bones.get(bone_name)
-    if pb is not None and 'fe_pose_location' in pb:
-        comp = tuple(float(v) for v in pb['fe_pose_location'])
+    _sl = fe_seed_pose_get(pb, 'location') if pb is not None else None
+    if _sl is not None:
+        comp = tuple(float(v) for v in _sl)
     return rest, rel, comp
 
 
@@ -1061,8 +1084,15 @@ def apply_zero_rest_scale(sca, rest_scale):
     return tuple(0.0 if abs(r) <= 1e-6 else float(v) for v, r in zip(sca, rest_scale))
 
 
-def bone_local_affine(translate, pivot, joint_orient_deg, rotate_deg, rotate_axis_deg, scale):
-    """L = T(translate) . T(pivot) . JO . Rot . RO . S . T(-pivot)  as (R, t)."""
+def bone_local_affine(translate, pivot, joint_orient_deg, rotate_deg, rotate_axis_deg, scale,
+                      pivot_offset1=(0.0, 0.0, 0.0)):
+    """L = T(translate + offset1) . T(pivot) . JO . Rot . RO . S . T(-pivot)  as (R, t).
+
+    v0.33.0: *pivot_offset1* is the 3-float slot at +136 (used when flag bit 9, 0x200, is set).
+    It is simply added to the translate (51/51 bones of bishop2_cef rebuild exactly that way);
+    before v0.33.0 it was ignored and bones with bit 9 (e.g. Face_locator) sat in the wrong
+    place in the seed pose."""
+    translate = tuple(translate[i] + pivot_offset1[i] for i in range(3))
     R = mat3_mul(mat3_mul(euler_deg_to_mat3(joint_orient_deg), euler_deg_to_mat3(rotate_deg)),
                  euler_deg_to_mat3(rotate_axis_deg))
     M = tuple(tuple(R[i][j] * scale[j] for j in range(3)) for i in range(3))
@@ -1245,6 +1275,7 @@ def read_skeleton_file(filepath, rest_mode='SEED'):
         sc_vals   = (rf4(base + 64), rf4(base + 68), rf4(base + 72))
         rot_vals  = (rf4(base + 76), rf4(base + 80), rf4(base + 84))
         seed_vals = struct.unpack('>12f', raw[base + 188 : base + 236])
+        off1_vals = struct.unpack('>3f', raw[base + 136 : base + 148])   # v0.33.0: pivot offset 1
 
         bind_matrix_hex = raw[base + 16 : base + 80].hex()
 
@@ -1282,7 +1313,7 @@ def read_skeleton_file(filepath, rest_mode='SEED'):
             'index':           b,
             'name':            name,
             'parent_idx':      parent_idx,
-            'position':        position,   # naive rest-pose position (matches mesh skinning)
+            'position':        position,   # placeholder; replaced below by the seed-pose head (bind-pose head in BIND mode)
             'raw_p88':         raw_p88,
             'p112':            (px112, py112, pz112),
             'pos_source':      pos_source,
@@ -1296,6 +1327,7 @@ def read_skeleton_file(filepath, rest_mode='SEED'):
             'rotate_deg':      rot_vals,
             'translate':       (px88, py88, pz88),
             'seed':            seed_vals,
+            'pivot_offset1':   off1_vals,
             'skin':            struct.unpack('>12f', raw[base + 16 : base + 64]),
         })
 
@@ -1306,16 +1338,17 @@ def read_skeleton_file(filepath, rest_mode='SEED'):
     #     world[bone] = world[parent] . L[bone]          (see bone_local_affine)
     #     position    = world[bone] applied to the rotate pivot (+112)
     # so Class A bones with scale or translate (Base, transform1, ...) and
-    # rotate-axis bones need no special case.  The armature rest pose IS the
-    # engine's seed pose, so no compensating pose offsets are needed any more
-    # (pose_location / pose_rotation are all zero).
+    # rotate-axis bones need no special case.  Here the bone heads are the engine's
+    # SEED pose, so no compensating pose offsets are needed any more (the legacy
+    # 'pose_location' / 'pose_rotation' entries are all zero; in BIND mode the seed pose is
+    # written to the pose channels by create_armature).
     #
     # Blender bone frames (world_rot) are scale-free rotation chains:
     #     frame(b) = chain(parent) . JO_b          orientation of the edit bone
     #     chain(b) = frame(b) . Rot_b . RO_b       what children inherit
     # Known limits: scale along the chain moves the joints (it is in the
     # positions) but is NOT applied to animated translate keys; rest Rot != 0
-    # is baked into the rest pose rather than shown as a pose rotation.
+    # is baked into the seed pose rather than shown as a pose rotation.
     resolved = {}
 
     def resolve(i, depth=0):
@@ -1328,7 +1361,8 @@ def read_skeleton_file(filepath, rest_mode='SEED'):
         else:
             Wp, Rp = IDENT_AFFINE, IDENT3
         L = bone_local_affine(b['translate'], b['p112'], b['local_rot_deg'],
-                              b['rotate_deg'], b['rotate_axis_deg'], safe_scale(b['scale']))
+                              b['rotate_deg'], b['rotate_axis_deg'], safe_scale(b['scale']),
+                              b['pivot_offset1'])
         W = affine_mul(Wp, L)
         frame = mat3_mul(Rp, euler_deg_to_mat3(b['local_rot_deg']))
         chain = mat3_mul(mat3_mul(frame, euler_deg_to_mat3(b['rotate_deg'])),
@@ -1732,9 +1766,10 @@ def write_skeleton_file(armature_obj, filepath, source_filepath="", append_new_b
             _old_jo  = struct.unpack_from('>3f', _rec0, 100)
             _old_p   = struct.unpack_from('>3f', _rec0, 112)
             _old_ro  = struct.unpack_from('>3f', _rec0, 160)
+            _old_o1  = struct.unpack_from('>3f', _rec0, 136)     # v0.33.0: pivot offset 1
         else:
             _old_s   = (1.0, 1.0, 1.0)
-            _old_rot = _old_t = _old_jo = _old_p = _old_ro = (0.0, 0.0, 0.0)
+            _old_rot = _old_t = _old_jo = _old_p = _old_ro = _old_o1 = (0.0, 0.0, 0.0)
         _jo = _old_jo
         _jp = _b['blender_bone'].get('fe_local_rot_deg')
         if _jp is not None:
@@ -1749,18 +1784,18 @@ def write_skeleton_file(armature_obj, filepath, source_filepath="", append_new_b
         _changed = not _has_raw
         _Winv = affine_inverse(_Wp)
         if _Winv is not None:
-            _sum = affine_apply(_Winv, _b['position'])          # = translate + pivot
+            _sum = affine_apply(_Winv, _b['position'])          # = translate + offset1 + pivot
             if _is_b:
-                _cand_t = tuple(_sum[k] - _old_p[k] for k in range(3))
+                _cand_t = tuple(_sum[k] - _old_p[k] - _old_o1[k] for k in range(3))
                 _cand_p = _old_p
             else:
                 _cand_t = _old_t
-                _cand_p = tuple(_sum[k] - _old_t[k] for k in range(3))
+                _cand_p = tuple(_sum[k] - _old_t[k] - _old_o1[k] for k in range(3))
             _diff = max(abs(_cand_t[k] - _old_t[k]) + abs(_cand_p[k] - _old_p[k]) for k in range(3))
             if _diff > 1e-4 or not _has_raw:
                 _new_t, _new_p = _cand_t, _cand_p
                 _changed = True
-        _L = bone_local_affine(_new_t, _new_p, _jo, _old_rot, _old_ro, safe_scale(_old_s))
+        _L = bone_local_affine(_new_t, _new_p, _jo, _old_rot, _old_ro, safe_scale(_old_s), _old_o1)
         _final[_idx] = {'t': _new_t, 'p': _new_p, 'changed': _changed,
                         'has_raw': _has_raw, 'W': affine_mul(_Wp, _L)}
 
@@ -1974,7 +2009,8 @@ def write_skeleton_file(armature_obj, filepath, source_filepath="", append_new_b
                         struct.unpack_from('>3f', rec, 100),
                         struct.unpack_from('>3f', rec, 76),
                         struct.unpack_from('>3f', rec, 160),
-                        safe_scale(struct.unpack_from('>3f', rec, 64)))
+                        safe_scale(struct.unpack_from('>3f', rec, 64)),
+                        struct.unpack_from('>3f', rec, 136))      # v0.33.0: pivot offset 1
                     for _r in range(3):
                         for _c in range(3):
                             struct.pack_into('>f', rec, 188 + (_r * 4 + _c) * 4, _L[0][_r][_c])
@@ -2214,11 +2250,10 @@ def create_armature(obj_name, bones, armature_data_name=None, skeleton_filepath=
         bbone['fe_import_name']     = safe_name   # Blender name at import (v0.30.3)
 
     # ── Pose bone transforms ───────────────────────────────────────────────────
-    # Apply the difference between true world position and naive rest-pose position
-    # as pose bone location (in bone local space = world space for unrotated bones).
-    # Apply local_rot_deg for Class B bones as pose bone XYZ Euler rotation.
-    # This means clearing the pose shows the raw skeleton matching the mesh,
-    # while the pose shows anatomically correct positions.
+    # Legacy pass (the values are zero since v0.30.1; BIND mode overwrites them below with
+    # the real seed pose).  Pose channels hold the difference between the seed pose and the
+    # bind pose, so clearing the pose shows the bind pose (the skeleton as the mesh was
+    # bound), while the pose shows the seed pose (the assembled character).
     arm_obj.animation_data_create()
     for bone in bones:
         safe_name = bone['name']
@@ -2236,7 +2271,7 @@ def create_armature(obj_name, bones, armature_data_name=None, skeleton_filepath=
 
         pbone.rotation_mode = 'XYZ'
 
-        # Location: pose_location (only for Class A with direct B parent and Class B with direct A parent)
+        # Location: legacy 'pose_location' (always zero since v0.30.1)
         loc = bone.get('pose_location', (0.0, 0.0, 0.0))
         if any(abs(v) > 1e-6 for v in loc):
             pbone.location = Vector(loc)
@@ -2265,8 +2300,8 @@ def create_armature(obj_name, bones, armature_data_name=None, skeleton_filepath=
         # Store pose transform custom properties on pose bone
         pbone['fe_bone_index'] = bone.get('index', idx)
         pbone['fe_bone_flags'] = bone.get('bone_flags', 0x180)
-        pbone['fe_pose_location'] = bone.get('pose_location', (0.0, 0.0, 0.0))
-        pbone['fe_pose_rotation'] = bone.get('pose_rotation', (0.0, 0.0, 0.0))
+        pbone[SEED_POSE_PROP['location']] = bone.get('pose_location', (0.0, 0.0, 0.0))
+        pbone[SEED_POSE_PROP['rotation']] = bone.get('pose_rotation', (0.0, 0.0, 0.0))
         
         # Store original transrot (local_rot_deg from bone record) - before rewriting
         # This is useful for animation export/import adjustments
@@ -2280,7 +2315,7 @@ def create_armature(obj_name, bones, armature_data_name=None, skeleton_filepath=
     # the pose-bone channels P_b (location / rotation / scale) that reproduce the
     # game's seed pose are
     #   P_b = rest_b^-1 x rest_parent x pose_parent^-1 x pose_b
-    # Clearing the pose (or 'Apply fe_pose' with zeros) shows the bind pose.
+    # Clearing the pose shows the bind pose; 'Apply Seed Pose' restores the seed pose.
     if rest_mode == 'BIND':
         def _m4(rows):
             return Matrix((tuple(rows[0]), tuple(rows[1]), tuple(rows[2]), (0.0, 0.0, 0.0, 1.0)))
@@ -2316,9 +2351,9 @@ def create_armature(obj_name, bones, armature_data_name=None, skeleton_filepath=
             pbone.location       = loc
             pbone.rotation_euler = eul
             pbone.scale          = sca
-            pbone['fe_pose_location'] = tuple(loc)
-            pbone['fe_pose_rotation'] = tuple(math.degrees(a) for a in eul)
-            pbone['fe_pose_scale']    = tuple(sca)
+            pbone[SEED_POSE_PROP['location']] = tuple(loc)
+            pbone[SEED_POSE_PROP['rotation']] = tuple(math.degrees(a) for a in eul)
+            pbone[SEED_POSE_PROP['scale']]    = tuple(sca)
             n_set += 1
         print(f"  [BIND] seed pose written to {n_set} pose bones ({n_fail} skipped: singular)")
 
@@ -7961,11 +7996,11 @@ class ImportGSkeleton(bpy.types.Operator, ImportHelper):
 
     rest_mode: EnumProperty(
         name="Rest pose",
-        items=[('BIND', "Mesh bind pose", "Place bones where the mesh was bound (lines up with the .gs mesh)"),
-               ('SEED', "Engine seed pose", "Place bones at the skeleton's stored pose")],
+        items=[('BIND', "Bind pose", "Rest the bones in the bind pose, where the mesh was bound (lines up with the .gs mesh); the seed pose is stored in the pose channels"),
+               ('SEED', "Seed pose", "Rest the bones in the seed pose, the skeleton's stored pose")],
         default='BIND',
         # v0.31.3: hidden from the import dialog; BIND is always used for now.
-        # Remove 'HIDDEN' to show the Mesh bind pose / Engine seed pose choice again.
+        # Remove 'HIDDEN' to show the Bind pose / Seed pose choice again.
         options={'HIDDEN'},
     )
 
@@ -8037,11 +8072,11 @@ class ImportGSWithSkeleton(bpy.types.Operator, ImportHelper):
 
     rest_mode: EnumProperty(
         name="Rest pose",
-        items=[('BIND', "Mesh bind pose", "Place bones where the mesh was bound (lines up with the mesh)"),
-               ('SEED', "Engine seed pose", "Place bones at the skeleton's stored pose")],
+        items=[('BIND', "Bind pose", "Rest the bones in the bind pose, where the mesh was bound (lines up with the mesh); the seed pose is stored in the pose channels"),
+               ('SEED', "Seed pose", "Rest the bones in the seed pose, the skeleton's stored pose")],
         default='BIND',
         # v0.31.3: hidden from the import dialog; BIND is always used for now.
-        # Remove 'HIDDEN' to show the Mesh bind pose / Engine seed pose choice again.
+        # Remove 'HIDDEN' to show the Bind pose / Seed pose choice again.
         options={'HIDDEN'},
     )
 
@@ -9116,10 +9151,11 @@ class FE_PT_ActionExportProps(bpy.types.Panel):
             col.label(text=f"  Loop Flag:   {loop}")
 
 
-class FE_OT_ApplyFePoseToPose(bpy.types.Operator):
-    bl_idname = "pose.apply_fe_pose_to_pose"
-    bl_label = "Apply fe_pose to Pose (FE9 & Fe10)"
-    bl_description = "Apply fe_pose_location and fe_pose_rotation to selected pose bones"
+class FE_OT_ApplySeedPose(bpy.types.Operator):
+    bl_idname = "pose.apply_seed_pose"
+    bl_label = "Apply Seed Pose (FE9 & FE10)"
+    bl_description = ("Set the selected pose bones to their seed pose (fe_seed_pose_location / "
+                      "_rotation / _scale).  Clearing the pose shows the bind pose instead")
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
@@ -9131,12 +9167,12 @@ class FE_OT_ApplyFePoseToPose(bpy.types.Operator):
         applied_count = 0
         skipped_count = 0
         for pbone in selected_pose_bones:
-            # Get fe_pose custom properties
-            fe_pose_loc = pbone.get('fe_pose_location')
-            fe_pose_rot = pbone.get('fe_pose_rotation')
-            fe_pose_scl = pbone.get('fe_pose_scale')
+            # Seed-pose custom properties (v0.33.1 names; the pre-v0.33.1 fe_pose_* names are read too)
+            seed_loc = fe_seed_pose_get(pbone, 'location')
+            seed_rot = fe_seed_pose_get(pbone, 'rotation')
+            seed_scl = fe_seed_pose_get(pbone, 'scale')
 
-            if fe_pose_loc is None and fe_pose_rot is None:
+            if seed_loc is None and seed_rot is None:
                 skipped_count += 1
                 continue
 
@@ -9147,39 +9183,39 @@ class FE_OT_ApplyFePoseToPose(bpy.types.Operator):
             # this operator can also undo an offset it (or the import) applied
             # earlier.  Skipping near-zero values left the pose bone stuck at
             # whatever it currently was, which is the opposite of "return the
-            # bone to the base rest pose".
+            # bone to the seed pose".
 
-            if fe_pose_loc is not None:
-                pbone.location = Vector((float(fe_pose_loc[0]),
-                                         float(fe_pose_loc[1]),
-                                         float(fe_pose_loc[2])))
+            if seed_loc is not None:
+                pbone.location = Vector((float(seed_loc[0]),
+                                         float(seed_loc[1]),
+                                         float(seed_loc[2])))
 
-            if fe_pose_rot is not None:
-                # fe_pose_rotation is stored in DEGREES (read_skeleton_file
+            if seed_rot is not None:
+                # The seed rotation is stored in DEGREES (read_skeleton_file
                 # emits math.degrees(...)), while PoseBone.rotation_euler is in
                 # RADIANS.  create_armature() converts on import; this operator
                 # used to skip the conversion and fed the degrees straight into
                 # a radians field, which rotated bones by ~57x too far.
-                pbone.rotation_euler = Euler((math.radians(float(fe_pose_rot[0])),
-                                               math.radians(float(fe_pose_rot[1])),
-                                               math.radians(float(fe_pose_rot[2]))),
+                pbone.rotation_euler = Euler((math.radians(float(seed_rot[0])),
+                                               math.radians(float(seed_rot[1])),
+                                               math.radians(float(seed_rot[2]))),
                                               'XYZ')
 
-            pbone.scale = Vector((float(fe_pose_scl[0]), float(fe_pose_scl[1]), float(fe_pose_scl[2]))) \
-                if fe_pose_scl is not None else Vector((1.0, 1.0, 1.0))
+            pbone.scale = Vector((float(seed_scl[0]), float(seed_scl[1]), float(seed_scl[2]))) \
+                if seed_scl is not None else Vector((1.0, 1.0, 1.0))
 
             applied_count += 1
 
-        msg = f"Applied fe_pose to {applied_count} pose bone(s)"
+        msg = f"Applied seed pose to {applied_count} pose bone(s)"
         if skipped_count:
-            msg += f"; {skipped_count} skipped (no fe_pose properties)"
+            msg += f"; {skipped_count} skipped (no seed pose properties)"
         self.report({'INFO'}, msg)
         return {'FINISHED'}
 
 
-def _menu_apply_fe_pose(self, context):
-    self.layout.operator(FE_OT_ApplyFePoseToPose.bl_idname,
-                         text="Apply fe_pose to Pose (FE9 & FE10)")
+def _menu_apply_seed_pose(self, context):
+    self.layout.operator(FE_OT_ApplySeedPose.bl_idname,
+                         text="Apply Seed Pose (FE9 & FE10)")
 
 
 # =============================================================================
@@ -9243,7 +9279,7 @@ def register():
     # bpy.utils.register_class(FE_PT_BoneTypePanel)
     bpy.utils.register_class(FE_OT_PrepareActionExport)
     bpy.utils.register_class(FE_PT_ActionExportProps)
-    bpy.utils.register_class(FE_OT_ApplyFePoseToPose)
+    bpy.utils.register_class(FE_OT_ApplySeedPose)
 
     bpy.types.TOPBAR_MT_file_import.append(_menu_mesh)
     bpy.types.TOPBAR_MT_file_import.append(_menu_skel_import)
@@ -9255,7 +9291,7 @@ def register():
     bpy.types.TOPBAR_MT_file_export.append(_menu_from_armature)
     bpy.types.TOPBAR_MT_file_export.append(_menu_anim_export)
     bpy.types.VIEW3D_MT_pose.append(_menu_prepare_action)
-    bpy.types.VIEW3D_MT_pose.append(_menu_apply_fe_pose)
+    bpy.types.VIEW3D_MT_pose.append(_menu_apply_seed_pose)
     bpy.types.DOPESHEET_MT_action.append(_menu_prepare_action)
 
 
@@ -9274,7 +9310,7 @@ def unregister():
     # bpy.utils.unregister_class(FE_PT_BoneTypePanel)
     bpy.utils.unregister_class(FE_OT_PrepareActionExport)
     bpy.utils.unregister_class(FE_PT_ActionExportProps)
-    bpy.utils.unregister_class(FE_OT_ApplyFePoseToPose)
+    bpy.utils.unregister_class(FE_OT_ApplySeedPose)
 
     bpy.types.TOPBAR_MT_file_import.remove(_menu_mesh)
     bpy.types.TOPBAR_MT_file_import.remove(_menu_skel_import)
@@ -9286,7 +9322,7 @@ def unregister():
     bpy.types.TOPBAR_MT_file_export.remove(_menu_from_armature)
     bpy.types.TOPBAR_MT_file_export.remove(_menu_anim_export)
     bpy.types.VIEW3D_MT_pose.remove(_menu_prepare_action)
-    bpy.types.VIEW3D_MT_pose.remove(_menu_apply_fe_pose)
+    bpy.types.VIEW3D_MT_pose.remove(_menu_apply_seed_pose)
     bpy.types.DOPESHEET_MT_action.remove(_menu_prepare_action)
     # del bpy.types.Scene.fe_bone_panel_mode
 
