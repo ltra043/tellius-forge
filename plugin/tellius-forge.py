@@ -2,8 +2,8 @@ bl_info = {
     "name": "Tellius Forge",
     "description": "Fire Emblem 9 & 10 Asset Handler",
     "author": "Jade (ltra043), based on work by Zheneq and ATMachine",
-    "version": (0, 34, 6),
-    "blender": (4, 2, 0),
+    "version": (0, 35, 4),
+    "blender": (5, 0, 0),
     "location": "File > Import, File > Export",
     "category": "Import-Export",
 }
@@ -30,6 +30,35 @@ from bpy_extras.io_utils import ImportHelper, ExportHelper
 from mathutils import Vector, Euler, Matrix
 
 plugin_version: str = f'v{bl_info["version"][0]}.{bl_info["version"][1]}.{bl_info["version"][2]}'
+
+def fe_set_bone_id_hex(bone):
+    """v0.35.4: keep the display-only hex copies of a bone's IDs in step with the decimal ones:
+    'fe_bone_id_hex' <- 'fe_original_bone_id' and 'fe_bone_index_hex' <- 'fe_bone_index' (e.g. '0x1F').
+    Works on a Bone or a PoseBone.  The decimal properties are the ones the exporter reads; the hex
+    strings are never read back."""
+    for src, dst in (('fe_original_bone_id', 'fe_bone_id_hex'), ('fe_bone_index', 'fe_bone_index_hex')):
+        try:
+            n = int(bone.get(src))
+        except (TypeError, ValueError):
+            n = -1
+        if n >= 0:
+            bone[dst] = f"0x{n:02X}"
+        elif dst in bone:
+            del bone[dst]
+
+
+def fe_sync_bone_hex(armature_obj, bones=None):
+    """v0.35.4: refresh the hex copies on the bones (all, or the given Bone list) and on their pose bones.
+    The pose bone's 'fe_bone_index' is re-copied from its bone, so both show the same current value."""
+    pose = armature_obj.pose
+    for bone in (bones if bones is not None else armature_obj.data.bones):
+        fe_set_bone_id_hex(bone)
+        pbone = pose.bones.get(bone.name) if pose else None
+        if pbone is not None:
+            if 'fe_bone_index' in bone:
+                pbone['fe_bone_index'] = int(bone['fe_bone_index'])
+            fe_set_bone_id_hex(pbone)
+
 
 # Mapping from ga channel_type int → pose bone custom property name for B2
 CH_TO_B2_PROP = {
@@ -964,21 +993,19 @@ GA_PREVIEW_TOL_DEG = 0.1
 # =============================================================================
 
 def find_skeleton_file(start_path):
-    """Search for skeleton.g near *start_path*."""
-    base_dir   = os.path.dirname(os.path.abspath(start_path))
-    candidate  = os.path.join(base_dir, 'skeleton.g')
-    if os.path.isfile(candidate):
-        return candidate
-    pack_dir   = os.path.join(base_dir, 'pack')
-    candidate2 = os.path.join(pack_dir, 'skeleton.g')
-    if os.path.isfile(candidate2):
-        return candidate2
-    # Added check for when body/skeleton have non-standard name
-    # Example: maps are named bmap01.gs, bmap02.g, etc 
-    body_stem = start_path.stem
-    candidate3  = os.path.join(base_dir, f'{body_stem}.g')
-    if os.path.isfile(candidate3):
-        return candidate3
+    """Search for a skeleton .g beside *start_path* (v0.35.0).
+
+    Order: <file stem>.g first (maps are named bmap01.gs / bmap01.g, etc.),
+    then skeleton.g.  Both must be in the same folder.  Returns None when
+    *start_path* is empty or nothing is found."""
+    if not start_path:
+        return None
+    base_dir = os.path.dirname(os.path.abspath(start_path))
+    stem = os.path.splitext(os.path.basename(start_path))[0]
+    for name in (stem + '.g', 'skeleton.g'):
+        candidate = os.path.join(base_dir, name)
+        if os.path.isfile(candidate):
+            return candidate
     return None
 
 
@@ -1656,6 +1683,8 @@ def write_skeleton_file(armature_obj, filepath, source_filepath="", append_new_b
             else:
                 seen_orig_ids[oid] = b
 
+    fe_sync_bone_hex(armature_obj)               # v0.35.4: refresh the hex display copies (bones + pose bones)
+
     bones_by_idx = {b['fe_index']: b for b in bones_sorted}
 
     # --- Phase 5: Build sibling / first-child chains ---
@@ -2246,6 +2275,7 @@ def create_armature(obj_name, bones, armature_data_name=None, skeleton_filepath=
         bbone['fe_rotate_axis_deg'] = bone.get('rotate_axis_deg', (0.0, 0.0, 0.0))
         bbone['fe_original_name']   = bone['name']
         bbone['fe_original_bone_id'] = bone['index']
+        fe_set_bone_id_hex(bbone)                # v0.35.4: 'fe_bone_id_hex' = '0x..' (display only)
         bbone['fe_bind_offset']     = tuple(bone.get('bind_offset', (0.0, 0.0, 0.0)))
         bbone['fe_import_name']     = safe_name   # Blender name at import (v0.30.3)
 
@@ -2299,6 +2329,7 @@ def create_armature(obj_name, bones, armature_data_name=None, skeleton_filepath=
 
         # Store pose transform custom properties on pose bone
         pbone['fe_bone_index'] = bone.get('index', idx)
+        fe_set_bone_id_hex(pbone)                # v0.35.4: 'fe_bone_index_hex'
         pbone['fe_bone_flags'] = bone.get('bone_flags', 0x180)
         pbone[SEED_POSE_PROP['location']] = bone.get('pose_location', (0.0, 0.0, 0.0))
         pbone[SEED_POSE_PROP['rotation']] = bone.get('pose_rotation', (0.0, 0.0, 0.0))
@@ -4328,15 +4359,17 @@ def fe_import_tpl_images(tpl_path, game_materials, base_name=''):
     return out
 
 
-def fe_apply_tpl_to_materials(materials, tpl_path):
+def fe_apply_tpl_to_materials(materials, tpl_path, image_prefix=''):
     """Read *tpl_path* and (re)assign the images to already imported materials.
     Used by the 'import texture to a body' operator.  A material that already has an image made
     by this plugin gets it replaced (the old datablock is removed when nothing else uses it and the
-    new image takes its name).  Returns (materials updated, images created)."""
+    new image takes its name).  v0.35.4: *image_prefix* (the 'Import as' name) replaces the .tpl file
+    name in the image names ('<prefix>_<index>') and, when given, the new image keeps that name instead
+    of taking the old image's name.  Returns (materials updated, images created)."""
     with open(tpl_path, 'rb') as f:
         data = f.read()
     infos = tpl_read_info(data)
-    stem = os.path.splitext(os.path.basename(tpl_path))[0]
+    stem = image_prefix or os.path.splitext(os.path.basename(tpl_path))[0]
     by_idx = {}
     for mat in materials:
         idx = mat.get('fe_tpl_index')
@@ -4366,7 +4399,7 @@ def fe_apply_tpl_to_materials(materials, tpl_path):
         if old is not None and old.users == 0:
             old_name = old.name
             bpy.data.images.remove(old)
-            img.name = old_name
+            img.name = f"{stem}_{idx}" if image_prefix else old_name
         n_imgs += 1
     return n_mats, n_imgs
 
@@ -4542,7 +4575,7 @@ def gs_build_vertex_table(origins, quant):
 #     in gs_original_data for the patch-in-place exporter.
 #   - v19.2 addition: Calls setup_shader_tree for newly created materials.
 
-def create_blender_mesh(name, mesh_data, tpl_path='', merge_materials=False):
+def create_blender_mesh(name, mesh_data, tpl_path='', merge_materials=False, image_prefix=''):
     """Create a Blender mesh object from parsed .gs data."""
     import json
     print(f"\n=== CREATING MESH '{name}' ===")
@@ -4738,7 +4771,8 @@ def create_blender_mesh(name, mesh_data, tpl_path='', merge_materials=False):
 
     if tpl_path and model_mats:        # v0.32.4: wire in / replace the images (see the comment above)
         try:
-            n_mats, n_imgs = fe_apply_tpl_to_materials(model_mats, tpl_path)
+            n_mats, n_imgs = fe_apply_tpl_to_materials(model_mats, tpl_path, image_prefix)
+            obj['fe_tpl_filename'] = os.path.basename(tpl_path)      # v0.35.4: original .tpl name, for lookup
             print(f"  [TPL] {n_imgs} image(s) applied to {n_mats} material(s)")
         except Exception as e:
             print(f"  [TPL] WARNING: texture import failed: {e}")
@@ -5007,199 +5041,6 @@ def create_unit_vertex_groups(mesh_obj, armature_obj, bones):
         unit_num += 1
 
     print(f"  Unit vertex groups created: {unit_num - 1}")
-
-
-# =============================================================================
-# MESH (.gs) — EXPORT (patch vertex/normal/UV tables in-place + material indices)
-# =============================================================================
-#
-# v11 additions over v10:
-#   - After patching vertex/normal/UV data, also patches the material index byte
-#     (chunk descriptor +0x0B) for each chunk, based on the current Blender
-#     material slot assignments of the faces belonging to that chunk.
-#   - The dominant (most common) material slot among a chunk's faces is used.
-#     In a well-formed mesh all faces within a chunk share the same slot.
-#
-# Limitations (unchanged from v10):
-#   - Cannot add or remove vertices, normals, or UV entries.
-#   - Cannot add or remove faces or change triangle-strip topology.
-#   - Full strip rebuilder (needed to add/remove geometry) is a future version.
-
-def export_gs_file(mesh_obj, filepath):
-    """Patch-write a .gs file with current mesh data.
-
-    Returns (True, message) on success or (False, reason) on failure.
-    """
-    import json as _json
-
-    gs_json = mesh_obj.get('gs_original_data')
-    if not gs_json:
-        return False, "No gs_original_data found — was this mesh imported with this plugin?"
-
-    gs  = _json.loads(str(gs_json))
-    raw = bytearray(bytes.fromhex(gs['file_data_hex']))
-    mesh           = mesh_obj.data
-    used_composite = gs['used_composite']
-
-    # ── Vertices (and normals for composite) ──────────────────────────────────
-    v_offset = gs['vertex_offset']
-    v_count  = gs['vertex_count']
-
-    if len(mesh.vertices) != v_count:
-        return False, (f"Vertex count mismatch: Blender has {len(mesh.vertices)}, "
-                       f"original file has {v_count}.  "
-                       f"Adding/removing vertices is not supported in v11.")
-
-    if used_composite:
-        # v0.29.2: use the shift stored at import (meshes imported with an
-        # older version have no stored value and keep the old default of 8).
-        CS = 1 << int(gs.get('composite_shift', CB_DEFAULT_SHIFT))
-        mesh.calc_normals()
-        for i, vert in enumerate(mesh.vertices):
-            co = vert.co
-            n  = vert.normal
-            x  = max(-32768, min(32767, int(round(co.x * CS))))
-            y  = max(-32768, min(32767, int(round(co.y * CS))))
-            z  = max(-32768, min(32767, int(round(co.z * CS))))
-            nx = max(-32768, min(32767, int(round(n.x  * CS))))
-            ny = max(-32768, min(32767, int(round(n.y  * CS))))
-            nz = max(-32768, min(32767, int(round(n.z  * CS))))
-            struct.pack_into('>hhhhhh', raw, v_offset + i * 12, x, y, z, nx, ny, nz)
-    else:
-        vs = gs['vertex_scale']
-        for i, vert in enumerate(mesh.vertices):
-            co = vert.co
-            x  = max(-32768, min(32767, int(round(co.x * vs))))
-            y  = max(-32768, min(32767, int(round(co.y * vs))))
-            z  = max(-32768, min(32767, int(round(co.z * vs))))
-            struct.pack_into('>hhh', raw, v_offset + i * 6, x, y, z)
-        n_offset = gs.get('norm_offset', 0)
-        n_count  = gs.get('norm_count',  0)
-        ns       = gs.get('norm_scale',  1)
-        if n_offset and n_count:
-            mesh.calc_normals()
-            for i in range(min(n_count, len(mesh.vertices))):
-                n  = mesh.vertices[i].normal
-                nx = max(-128, min(127, int(round(n.x * ns))))
-                ny = max(-128, min(127, int(round(n.y * ns))))
-                nz = max(-128, min(127, int(round(n.z * ns))))
-                struct.pack_into('>bbb', raw, n_offset + i * 3, nx, ny, nz)
-
-    # ── UVs ───────────────────────────────────────────────────────────────────
-    uv_offset       = gs.get('uv_offset', 0)
-    uv_count_orig   = gs.get('uv_count',  0)  # From file header (stored at import)
-    
-    # Use mesh property as the source of truth for original UV count
-    mesh_uv_count = mesh_obj.get('gs_uv_count', 0)
-    if mesh_uv_count > 0:
-        uv_count_orig = mesh_uv_count
-    
-    uv_scale        = gs.get('uv_scale',  1)
-    loop_uv_indices = gs.get('loop_uv_indices', [])
-
-    print(f"  EXPORT UV: uv_offset={uv_offset}, uv_count_orig={uv_count_orig}, loop_uv_indices len={len(loop_uv_indices)}")
-    print(f"  EXPORT UV: uv_offset is zero? {uv_offset == 0}")
-
-    # Always build uv_bytes - either with original indices or fallback
-    uv_bytes = bytearray()
-    
-    # Always rebuild uv_table from mesh
-    print(f"  EXPORT UV: condition uv_offset={uv_offset}, uv_count_orig={uv_count_orig}, loop_uv_indices={bool(loop_uv_indices)}")
-    if uv_offset and uv_count_orig and loop_uv_indices:
-        print("  >>> ENTERING UV EXPORT BLOCK <<<")
-        uvl = mesh.uv_layers.active
-        if uvl is None:
-            print("  Warning: no active UV layer — UVs not exported")
-        else:
-            # Create uv_table with correct original size (NOT deduplicated)
-            uv_table = [None] * uv_count_orig
-            assigned_count = 0
-            
-            # First pass: fill all UV slots that are used by current mesh
-            for poly in mesh.polygons:
-                for corner_i in range(len(poly.loop_indices)):
-                    li = poly.loop_start + corner_i
-                    if li < len(loop_uv_indices):
-                        ui = loop_uv_indices[li]
-                        if 0 <= ui < uv_count_orig:
-                            uv_table[ui] = uvl.data[li].uv
-                            assigned_count += 1
-            
-            # Second pass: fill any remaining None slots with default UVs
-            # This ensures we have the correct number of UVs even if duplicates existed
-            default_uv = (0.0, 0.0)
-            unfilled = 0
-            for i in range(len(uv_table)):
-                if uv_table[i] is None:
-                    uv_table[i] = default_uv
-                    unfilled += 1
-            
-            print(f"  EXPORT UV: assigned {assigned_count} UV entries, filled {unfilled} gaps")
-            print(f"  EXPORT UV: final uv_table size: {len(uv_table)}")
-            
-            # Debug: show what's in first few uv_table entries
-            print(f"  EXPORT UV: uv_table[0:5] = {uv_table[0:5]}")
-            
-            # Build uv_bytes while writing (for later sections that need it)
-            uv_bytes = bytearray()
-            for ui, uv in enumerate(uv_table):
-                u = max(-32768, min(32767, int(round(uv[0] * uv_scale))))
-                v = max(-32768, min(32767, int(round((1.0 - uv[1]) * uv_scale))))
-                uv_bytes += struct.pack('>hh', u, v)
-                struct.pack_into('>hh', raw, uv_offset + ui * 4, u, v)
-    else:
-        # Fallback: create empty uv_bytes if no loop_uv_indices
-        uv_bytes = bytearray()
-        print("  EXPORT UV: no loop_uv_indices, using fallback")
-
-    # ── v11: Material index patching ──────────────────────────────────────────
-    #
-    # For each chunk, determine the dominant Blender material slot among its
-    # faces (should be uniform within a correctly-formed mesh).  If it differs
-    # from the originally stored material index, patch byte at:
-    #   chunk_list_addr + chunk_index * 32 + 11
-    #
-    # The dominant slot value IS the game material index (slot 0 = material 0,
-    # slot 1 = material 1, etc.) because create_blender_mesh adds materials
-    # to slots in the same order as the game material table.
-
-    chunk_list_addr   = gs.get('chunk_list_addr', 0)
-    chunk_face_starts = gs.get('chunk_face_starts', [])
-    chunk_face_counts = gs.get('chunk_face_counts', [])
-    orig_mat_indices  = gs.get('chunk_mat_indices', [])
-    mats_patched      = 0
-
-    if chunk_list_addr and chunk_face_starts:
-        for ci, (face_start, face_count) in enumerate(
-                zip(chunk_face_starts, chunk_face_counts)):
-
-            # Count material slot occurrences among this chunk's faces
-            slot_counts = {}
-            for fi in range(face_start, face_start + face_count):
-                if fi < len(mesh.polygons):
-                    si = mesh.polygons[fi].material_index
-                    slot_counts[si] = slot_counts.get(si, 0) + 1
-
-            if not slot_counts:
-                continue
-
-            dominant_slot = max(slot_counts, key=slot_counts.get)
-            mat_byte_off  = chunk_list_addr + ci * 32 + 11
-
-            if mat_byte_off < len(raw):
-                orig = orig_mat_indices[ci] if ci < len(orig_mat_indices) else None
-                if dominant_slot != orig:
-                    raw[mat_byte_off] = dominant_slot & 0xFF
-                    mats_patched += 1
-
-    # ── Write ─────────────────────────────────────────────────────────────────
-    with open(filepath, 'wb') as f:
-        f.write(raw)
-
-    print(f"\n=== EXPORTED MESH: {os.path.basename(filepath)} ===")
-    print(f"  {len(raw)} bytes  |  {v_count} verts  |  "
-          f"{uv_count} UVs  |  {mats_patched} chunk material indices updated")
-    return True, f"{len(raw)} bytes written"
 
 
 # =============================================================================
@@ -5491,7 +5332,9 @@ def gs_write_composite(raw_orig, data, log=print):
         pos_bytes += struct.pack('>hhh', *(q16(x * vscale) for x in V[v]['co']))
     nrm_table, nrm_key, reg_nrm = [], {}, {}
     for v in reg_used:
-        k = tuple(max(-128, min(127, int(round(x * nscale)))) for x in V[v]['nrm'])
+        # v0.35.2: negate like the composite slots and the ymu exporter (measured on kniaUt_ax: original mean dot -0.94
+        # against the strip-winding face normal, v0.35.1 round trip +0.68)
+        k = tuple(max(-128, min(127, int(round(-x * nscale)))) for x in V[v]['nrm'])
         if k not in nrm_key:
             nrm_key[k] = len(nrm_table)
             nrm_table.append(k)
@@ -5928,6 +5771,18 @@ def export_gs_composite(mesh_obj, filepath, addon_mesh_objs=None, addon_chunk_mo
 #   [String pool        null-terminated ASCII strings]
 #   [Relocation table   4 bytes × K entries, sorted ascending]
 
+def gs_original_chunk_lists(raw, first_chunk_addr, n_chunks):
+    """v0.35.1: draw list (0 = 0x5C, 1 = 0x60, 2 = 0x64) of each chunk record of an ORIGINAL .gs,
+    indexed by record position (record i sits at first_chunk_addr + 32 * i)."""
+    of_addr = {}
+    for lid, hoff in enumerate((0x5C, 0x60, 0x64)):
+        a = struct.unpack_from('>I', raw, hoff)[0]
+        while a and a + 0x20 not in of_addr and a + 0x28 <= len(raw):
+            of_addr[a + 0x20] = lid
+            a = struct.unpack_from('>I', raw, a + 0x20 + 4)[0]
+    return [of_addr.get(first_chunk_addr + 32 * i, 0) for i in range(n_chunks)]
+
+
 def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BLENDER', append_new_bones=True,
                            mat_name_mode='ORIGINAL', addon_chunk_mode='BLENDED'):
     """Full-rebuild .gs exporter — v13.
@@ -5983,7 +5838,6 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
 
     # ── Preserved verbatim header regions ────────────────────────────────────
 
-    uses_field_0x5C = struct.unpack_from('>I', raw_orig, 0x5C)[0] != 0
 
     model_name_raw = struct.unpack_from('>I', raw_orig, 0x20)[0]
     model_name = (_read_cstring(raw_orig, model_name_raw + BASE)
@@ -6255,6 +6109,7 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
                         if bone_idx is None:
                             # Brand-new bone — assign fresh index.
                             ab['fe_bone_index'] = next_free_id
+                            fe_sync_bone_hex(armature_obj, [ab])      # v0.35.4
                             bone_idx = next_free_id
                             next_free_id += 1
                         else:
@@ -6718,9 +6573,11 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
 
     for i in range(bl_count):
         n  = mesh.vertices[i].normal
-        nx = max(-128, min(127, round(n.x * norm_scale)))
-        ny = max(-128, min(127, round(n.y * norm_scale)))
-        nz = max(-128, min(127, round(n.z * norm_scale)))
+        # v0.35.1: Blender builds normals from the clockwise-wound faces, so they point the other way
+        # from the game's (measured on lord: mean dot -0.77 original, +0.70 round trip); write -normal
+        nx = max(-128, min(127, round(-n.x * norm_scale)))
+        ny = max(-128, min(127, round(-n.y * norm_scale)))
+        nz = max(-128, min(127, round(-n.z * norm_scale)))
         key = (nx, ny, nz)
         if key not in nrm_key_to_idx:
             nrm_key_to_idx[key] = len(nrm_table)
@@ -7418,8 +7275,8 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
                     addon_chunk_list_addr = addon_gs.get('chunk_list_addr', 0)
                     BASE = 0x20
                     if addon_chunk_list_addr > 0 and len(addon_raw) > addon_chunk_list_addr:
-                        n_orig_chunks = len(addon_chunk_face_starts)
-                        for ci in range(n_orig_chunks):
+                        addon_n_chunks = len(addon_chunk_face_starts)      # v0.35.3: own name (it overwrote the main body's n_orig_chunks)
+                        for ci in range(addon_n_chunks):
                             chunk_rec_off = addon_chunk_list_addr + ci * 48
                             if chunk_rec_off + 48 <= len(addon_raw):
                                 # Read DL pointer to find GX cache after DL data
@@ -7468,10 +7325,10 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
             for poly in addon_mesh.polygons:
                 for corner, vi in enumerate(poly.vertices):
                     li = poly.loop_start + corner
-                    n  = addon_mesh.loops[li].normal
-                    nx = max(-128, min(127, round(n.x * norm_scale)))
-                    ny = max(-128, min(127, round(n.y * norm_scale)))
-                    nz = max(-128, min(127, round(n.z * norm_scale)))
+                    n  = addon_mesh.loops[li].normal          # v0.35.1: negated, see the main-mesh normals
+                    nx = max(-128, min(127, round(-n.x * norm_scale)))
+                    ny = max(-128, min(127, round(-n.y * norm_scale)))
+                    nz = max(-128, min(127, round(-n.z * norm_scale)))
                     nkey = (nx, ny, nz)
                     if nkey not in nrm_key_to_idx:
                         nrm_key_to_idx[nkey] = len(nrm_table)
@@ -8422,6 +8279,34 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
         print(f"  Chunk {ci}: {len(chunk_uvs)} unique UVs, "
               f"first 3: {first_coords}, last 3: {last_coords}")
 
+    # ── v0.35.1: keep every chunk in the draw list (0x5C / 0x60 / 0x64) it came from ─────────────
+    # The engine draws all first lists, then all second lists, ...; the second list is alpha-tested,
+    # so collapsing everything into one list makes cut-out textures draw opaque.  Original chunks keep
+    # their list; new / addon chunks use the material's stored fe_render_pass, else the list of an original
+    # chunk with the same material, else the last original list.
+    _orig_lists = gs_original_chunk_lists(raw_orig, chunk_list_addr, n_orig_chunks)
+    _rp_by_name = {}
+    for _bm in list(mesh.materials) + [_am for _ao in (addon_mesh_objs or []) if _ao is not None
+                                       for _am in _ao.data.materials]:
+        if _bm is not None and 'fe_render_pass' in _bm:
+            _rp_by_name.setdefault(fe_material_export_name(_bm, mat_name_mode), int(_bm['fe_render_pass']))
+    for ci, ch in enumerate(chunks_out):
+        ch['_mat_idx'] = get_mat_idx_for_chunk(ci)
+        if ci < n_orig_face_chunks and ci < len(_orig_lists):
+            ch['list'] = _orig_lists[ci]
+            continue
+        _nm = materials_out[ch['_mat_idx']]['name'] if ch['_mat_idx'] < len(materials_out) else None
+        _lid = _rp_by_name.get(_nm)
+        if _lid is None:
+            _lid = next((chunks_out[k]['list'] for k in range(min(ci, n_orig_face_chunks))
+                         if chunks_out[k]['_mat_idx'] == ch['_mat_idx']), None)
+        if _lid is None:
+            _lid = _orig_lists[min(n_orig_face_chunks, len(_orig_lists)) - 1] if _orig_lists else 0
+        ch['list'] = max(0, min(2, int(_lid)))
+        ch['prim_type'] = 0x38 + 0x20 * ch['list']      # fmt high byte mirrors the list (0x3x / 0x5x / 0x7x)
+    chunks_out[:] = sorted(chunks_out, key=lambda c: c['list'])      # stable: original order kept inside a list
+    print(f"  [v0.35.1] draw lists: {dict(Counter(c['list'] for c in chunks_out))} (0 = 0x5C, 1 = 0x60, 2 = 0x64)")
+
     # ── Step 6: Build string pool ─────────────────────────────────────────────
     # String pool already built in original order above, just add new strings
 
@@ -8548,10 +8433,10 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
         add_ptr(0x50, col_off)
     add_ptr(0x54, mat_off)
     add_ptr(0x58, ptra_off)
-    if uses_field_0x5C:
-        add_ptr(0x5C, chunk_off)
-    else:
-        add_ptr(0x60, chunk_off)
+    for _lid, _hoff in enumerate((0x5C, 0x60, 0x64)):
+        _first = next((k for k, c in enumerate(chunks_out) if c['list'] == _lid), None)
+        if _first is not None:
+            add_ptr(_hoff, chunk_off + _first * 32)
 
     tpl_cursor = tpl_off
     for mi, mat in enumerate(materials_out):
@@ -8567,7 +8452,7 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
     for ci, ch in enumerate(chunks_out):
         cp = chunk_off + ci * 32
         add_ptr(cp + 0,  ptra_off + ci * 36)
-        if ci < n_chunks - 1:
+        if ci < n_chunks - 1 and chunks_out[ci + 1]['list'] == ch['list']:
             add_ptr(cp + 4, chunk_off + (ci + 1) * 32)
         add_ptr(cp + 20, dl_offs_list[ci])
         if ch['gc_bytes']:
@@ -8606,10 +8491,10 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
         struct.pack_into('>I', header, 0x50, 0)
     struct.pack_into('>I', header, 0x54, mat_off  - BASE)
     struct.pack_into('>I', header, 0x58, ptra_off - BASE)
-    if uses_field_0x5C:
-        struct.pack_into('>I', header, 0x5C, chunk_off - BASE)
-    else:
-        struct.pack_into('>I', header, 0x60, chunk_off - BASE)
+    for _lid, _hoff in enumerate((0x5C, 0x60, 0x64)):
+        _first = next((k for k, c in enumerate(chunks_out) if c['list'] == _lid), None)
+        if _first is not None:
+            struct.pack_into('>I', header, _hoff, chunk_off + _first * 32 - BASE)
 
     struct.pack_into('>H', header, 0x6C, v_count)
     struct.pack_into('>H', header, 0x6E, n_count)
@@ -8675,7 +8560,7 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
     # Chunk descriptors (32 bytes each)
     for ci, ch in enumerate(chunks_out):
         ptra_raw = (ptra_off + ci * 36)        - BASE
-        next_raw = (chunk_off + (ci+1) * 32 - BASE) if ci < n_chunks - 1 else 0
+        next_raw = (chunk_off + (ci+1) * 32 - BASE) if (ci < n_chunks - 1 and chunks_out[ci + 1]['list'] == ch['list']) else 0
         # Get material index: prefer _mat_idx from chunk dict (addon chunks),
         # then chunk_mat_out[ci] (original chunks)
         mat_to_write = get_mat_idx_for_chunk(ci)
@@ -8889,10 +8774,25 @@ class ImportGSkeleton(bpy.types.Operator, ImportHelper):
         options={'HIDDEN'},
     )
 
+    import_as: StringProperty(   # v0.35.4
+        name="Import as",
+        description="Model name for the imported objects (leave blank to name them from the file). "
+                    "Blender adds .001 etc. if the name is taken",
+        default="",
+        options={'SKIP_SAVE'},
+    )
+
+    def invoke(self, context, event):      # v0.35.4: the name box is blank every time the dialog opens
+        self.import_as = ""
+        return ImportHelper.invoke(self, context, event)
+
+    def draw(self, context):          # v0.35.4
+        self.layout.prop(self, "import_as")
+
     def execute(self, context):
         try:
             bones = read_skeleton_file(self.filepath, self.rest_mode)
-            name  = os.path.splitext(os.path.basename(self.filepath))[0]
+            name  = self.import_as.strip() or os.path.splitext(os.path.basename(self.filepath))[0]
             create_armature(name, bones, skeleton_filepath=self.filepath, rest_mode=self.rest_mode)
             self.report({'INFO'}, f"Imported skeleton: {len(bones)} bones")
             return {'FINISHED'}
@@ -8921,8 +8821,21 @@ class ImportGSMesh(bpy.types.Operator, ImportHelper):
     files: bpy.props.CollectionProperty(type=bpy.types.OperatorFileListElement,
                                         options={'HIDDEN', 'SKIP_SAVE'})   # v0.32.2
 
+    import_as: StringProperty(   # v0.35.4
+        name="Import as",
+        description="Model name for the imported objects (leave blank to name them from the file). "
+                    "Blender adds .001 etc. if the name is taken",
+        default="",
+        options={'SKIP_SAVE'},
+    )
+
+    def invoke(self, context, event):      # v0.35.4: the name box is blank every time the dialog opens
+        self.import_as = ""
+        return ImportHelper.invoke(self, context, event)
+
     def draw(self, context):          # v0.32.2
         layout = self.layout
+        layout.prop(self, "import_as")
         layout.label(text="Ctrl+click a .tpl next to the .gs to load its textures")
         layout.prop(self, "merge_materials")
 
@@ -8933,9 +8846,11 @@ class ImportGSMesh(bpy.types.Operator, ImportHelper):
                 self.report({'ERROR'}, "Select a .gs file (a .tpl alone cannot be imported here).")
                 return {'CANCELLED'}
             md   = read_gs_file(gs_path)
-            name = os.path.splitext(os.path.basename(gs_path))[0]
+            custom = self.import_as.strip()          # v0.35.4
+            name = (custom + '_body') if custom else os.path.splitext(os.path.basename(gs_path))[0]
             mesh_obj = create_blender_mesh(name, md, tpl_path=tpl_path,
-                                          merge_materials=self.merge_materials)
+                                          merge_materials=self.merge_materials,
+                                          image_prefix=custom)
             self.report({'INFO'},
                 f"Imported: {len(md['vertices'])} verts, {len(md['faces'])} faces, "
                 f"{len(md['materials'])} materials")
@@ -8975,8 +8890,21 @@ class ImportGSWithSkeleton(bpy.types.Operator, ImportHelper):
     files: bpy.props.CollectionProperty(type=bpy.types.OperatorFileListElement,
                                         options={'HIDDEN', 'SKIP_SAVE'})   # v0.32.2
 
+    import_as: StringProperty(   # v0.35.4
+        name="Import as",
+        description="Model name for the imported objects (leave blank to name them from the file). "
+                    "Blender adds .001 etc. if the name is taken",
+        default="",
+        options={'SKIP_SAVE'},
+    )
+
+    def invoke(self, context, event):      # v0.35.4: the name box is blank every time the dialog opens
+        self.import_as = ""
+        return ImportHelper.invoke(self, context, event)
+
     def draw(self, context):          # v0.32.2
         layout = self.layout
+        layout.prop(self, "import_as")
         layout.label(text="Ctrl+click a .tpl next to the .gs to load its textures")
         layout.prop(self, "merge_materials")
 
@@ -9021,10 +8949,15 @@ class ImportGSWithSkeleton(bpy.types.Operator, ImportHelper):
             else:
                 # Use stem (filename without extension)
                 model_name = stem
-            
+
+            custom = self.import_as.strip()          # v0.35.4: overrides the automatic model name
+            if custom:
+                model_name = custom
+
             # Create mesh with "_body" suffix
             mesh_obj = create_blender_mesh(model_name + '_body', md, tpl_path=tpl_path,
-                                          merge_materials=self.merge_materials)
+                                          merge_materials=self.merge_materials,
+                                          image_prefix=custom)
 
             if bones is not None:
                 arm_obj = create_armature(model_name, bones, skeleton_filepath=skel_path,
@@ -9068,6 +9001,21 @@ class FE_OT_ImportTPLToBody(bpy.types.Operator, ImportHelper):
     filename_ext = ".tpl"
     filter_glob: StringProperty(default="*.tpl", options={'HIDDEN'})
 
+    import_as: StringProperty(   # v0.35.4
+        name="Import as",
+        description="Prefix for the image names: '<name>_0', '<name>_1' ... (leave blank to use the .tpl file name). "
+                    "Blender adds .001 etc. if the name is taken",
+        default="",
+        options={'SKIP_SAVE'},
+    )
+
+    def invoke(self, context, event):      # v0.35.4: the name box is blank every time the dialog opens
+        self.import_as = ""
+        return ImportHelper.invoke(self, context, event)
+
+    def draw(self, context):          # v0.35.4
+        self.layout.prop(self, "import_as")
+
     def execute(self, context):
         objs = list(context.selected_objects)
         if context.active_object is not None and context.active_object not in objs:
@@ -9085,7 +9033,9 @@ class FE_OT_ImportTPLToBody(bpy.types.Operator, ImportHelper):
             self.report({'ERROR'}, "Select an imported body mesh (or its armature): no materials with a TPL index found.")
             return {'CANCELLED'}
         try:
-            n_mats, n_imgs = fe_apply_tpl_to_materials(mats, self.filepath)
+            n_mats, n_imgs = fe_apply_tpl_to_materials(mats, self.filepath, self.import_as.strip())
+            for m in meshes:                                  # v0.35.4: remember the original .tpl name
+                m['fe_tpl_filename'] = os.path.basename(self.filepath)
         except Exception as e:
             self.report({'ERROR'}, f"Texture import failed: {e}")
             import traceback; traceback.print_exc()
@@ -9572,6 +9522,39 @@ class ExportGAnimation(bpy.types.Operator, ExportHelper):
 # The operator stores the per-mesh selections as a scene-level string property
 # so they survive invoke → execute round-trips.
 
+def fe_armature_of_mesh(obj):
+    """v0.35.4: the armature a mesh is modified by (Armature modifier) or parented to, else None.
+    Same two links _get_armature_meshes() uses, so the mesh is always in that armature's list."""
+    for mod in obj.modifiers:
+        if mod.type == 'ARMATURE' and mod.object is not None:
+            return mod.object
+    if obj.parent is not None and obj.parent.type == 'ARMATURE':
+        return obj.parent
+    return None
+
+
+def fe_resolve_export_armature(context):
+    """v0.35.4: (armature, error text).  The active object may be an armature or a body mesh.
+    With a mesh active, several selected meshes (or another armature) make the choice ambiguous -> refuse."""
+    active = context.active_object
+    if active is None:
+        return None, "Select a body mesh or its armature first."
+    if active.type == 'ARMATURE':
+        return active, None
+    if active.type != 'MESH':
+        return None, "Select a body mesh or its armature first."
+    others = [o.name for o in context.selected_objects if o is not active and o.type == 'MESH']
+    if others:
+        return None, ("Several meshes are selected (" + ", ".join([active.name] + others)
+                      + "). Select only one body mesh, or select the armature.")
+    arm = fe_armature_of_mesh(active)
+    if arm is None:
+        return None, f"Mesh '{active.name}' is not modified by or parented to an armature."
+    if any(o.type == 'ARMATURE' and o is not arm for o in context.selected_objects):
+        return None, "A different armature is selected too. Select only one body mesh or one armature."
+    return arm, None
+
+
 def _get_armature_meshes(arm_obj):
     """Return all mesh objects in the scene that use arm_obj as their armature."""
     result = []
@@ -9702,9 +9685,9 @@ class ExportFromArmature(bpy.types.Operator, ExportHelper):
         self.selection_str = f"main={main_name or ''}|include={inc_str}"
 
     def invoke(self, context, event):
-        arm_obj = context.active_object
-        if arm_obj is None or arm_obj.type != 'ARMATURE':
-            self.report({'ERROR'}, "Select an Armature object first.")
+        arm_obj, err = fe_resolve_export_armature(context)      # v0.35.4: armature OR body mesh
+        if arm_obj is None:
+            self.report({'ERROR'}, err)
             return {'CANCELLED'}
 
         meshes = _get_armature_meshes(arm_obj)
@@ -9735,9 +9718,9 @@ class ExportFromArmature(bpy.types.Operator, ExportHelper):
 
     def draw(self, context):
         layout = self.layout
-        arm_obj = context.active_object
-        if arm_obj is None or arm_obj.type != 'ARMATURE':
-            layout.label(text="No armature selected.", icon='ERROR')
+        arm_obj, err = fe_resolve_export_armature(context)      # v0.35.4
+        if arm_obj is None:
+            layout.label(text=err, icon='ERROR')
             return
 
         meshes = _get_armature_meshes(arm_obj)
@@ -9804,9 +9787,9 @@ class ExportFromArmature(bpy.types.Operator, ExportHelper):
         layout.prop(self, "addon_chunk_type", expand=True)
 
     def execute(self, context):
-        arm_obj = context.active_object
-        if arm_obj is None or arm_obj.type != 'ARMATURE':
-            self.report({'ERROR'}, "Select an Armature object first.")
+        arm_obj, err = fe_resolve_export_armature(context)      # v0.35.4
+        if arm_obj is None:
+            self.report({'ERROR'}, err)
             return {'CANCELLED'}
 
         # Read selection from scene scratchpad (set by FE_OT_ToggleMeshRole
