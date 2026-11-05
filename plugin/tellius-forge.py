@@ -2,7 +2,7 @@ bl_info = {
     "name": "Tellius Forge",
     "description": "Fire Emblem 9 & 10 Asset Handler",
     "author": "Jade (ltra043), based on work by Zheneq and ATMachine",
-    "version": (0, 36, 6),      # v0.36.6
+    "version": (0, 37, 3),      # v0.37.3
     "blender": (5, 0, 0),
     "location": "File > Import, File > Export",
     "category": "Import-Export",
@@ -4408,7 +4408,9 @@ def read_gs_file(filepath, bones=None):
                     else:
                         col_i = 0
                     ui = struct.unpack('>H', data[tp:tp+2])[0]; tp += 2
-                    if hu: tp += 2
+                    u2_i = -1                       # v0.37.0: second UV index (chunks with the 'hu' flag)
+                    if hu:
+                        u2_i = struct.unpack('>H', data[tp:tp+2])[0]; tp += 2
                     
                     bl_vi = vi            # v0.34.0: Blender vertex for this occurrence
                     if dup_mode and vi < table_n:
@@ -4424,22 +4426,22 @@ def read_gs_file(filepath, bones=None):
                     # Determine which vertex buffer and get valid normal count
                     if cb_regular:                   # v0.34.1: regular table, not the composite buffer
                         if vi < len(reg_v):
-                            sv.append((bl_vi, ni, ui_safe, col_i))
+                            sv.append((bl_vi, ni, ui_safe, col_i, u2_i))
                     elif vi < len(comp_vertices):
                         norm_count = len(comp_normals) if comp_normals else 0
                         ni_safe = ni if ni < norm_count else (norm_count - 1 if norm_count > 0 else 0)
                         if ui < len(uvs):
-                            sv.append((bl_vi, ni, ui, col_i))
+                            sv.append((bl_vi, ni, ui, col_i, u2_i))
                         elif norm_count > 0:
-                            sv.append((bl_vi, ni_safe, ui_safe, col_i))
+                            sv.append((bl_vi, ni_safe, ui_safe, col_i, u2_i))
                             skipped_verts += 1
                     elif vi < len(reg_v):
                         norm_count = len(reg_n) if reg_n else 0
                         ni_safe = ni if ni < norm_count else (norm_count - 1 if norm_count > 0 else 0)
                         if ui < len(uvs):
-                            sv.append((bl_vi, ni, ui, col_i))
+                            sv.append((bl_vi, ni, ui, col_i, u2_i))
                         elif norm_count > 0:
-                            sv.append((bl_vi, ni_safe, ui_safe, col_i))
+                            sv.append((bl_vi, ni_safe, ui_safe, col_i, u2_i))
                             skipped_verts += 1
                     chunk_verts.append((vi, sb_byte))
 
@@ -4633,10 +4635,21 @@ def read_gs_file(filepath, bones=None):
                     'samp1':   samp1,
                     'uv_sx':   uv_sx,
                     'uv_sy':   uv_sy,
+                    'flag_byte': data[tb + 1],                                       # v0.37.3: 1, 2, 4 or 6 (census)
+                    'word8':   struct.unpack('>I', data[tb+8:tb+12])[0],             # v0.37.3: nonzero when flag_byte has 2
+                    'word12':  struct.unpack('>I', data[tb+12:tb+16])[0],
                 })
 
             _pass = next((c_['list'] for c_ in chunks if c_['mat_idx'] == mi), 0) if chunk_addr and nums[6] else 0
+            # v0.37.3: style bits of the submesh flags (0x40 additive, 0x80 subtractive, 0x100 no-Z, 0x200 average two
+            # light colors; KLG, Reported).  Census: no material has submeshes that differ in these bits (Confirmed).
+            _style = 0
+            if chunk_addr and nums[6]:
+                for c_ in chunks:
+                    if c_['mat_idx'] == mi:
+                        _style |= c_['format'] & FE_STYLE_MASK
             materials.append({
+                'style_flags':  _style,       # v0.37.3
                 'render_pass':  _pass,        # v0.34.5
                 'name':         mat_name,
                 'diffuse_rgba': diffuse_rgba,
@@ -4815,6 +4828,15 @@ def read_gs_file(filepath, bones=None):
 
 TPL_MAGIC = 0x0020AF30
 TPL_FORMAT_CMPR = 14
+TPL_FORMAT_I4 = 0         # v0.37.1
+TPL_FORMAT_RGB5A3 = 5     # v0.37.1
+TPL_FORMAT_NAMES = {0: 'I4', 1: 'I8', 2: 'IA4', 3: 'IA8', 4: 'RGB565', 5: 'RGB5A3', 6: 'RGBA8', 8: 'C4', 9: 'C8', 14: 'CMPR'}   # v0.37.3
+FE_STYLE_MASK = 0x03C0     # v0.37.3: submesh flag bits 0x40 additive, 0x80 subtractive, 0x100 no-Z, 0x200 average two light colors
+FE_STYLE_ADDITIVE = 0x40
+TPL_FORMAT_I8 = 1         # v0.37.3
+TPL_FORMAT_IA4 = 2        # v0.37.3
+TPL_FORMAT_IA8 = 3        # v0.37.3
+TPL_FORMAT_RGB565 = 4     # v0.37.3
 TPL_WRAP_TO_BLENDER = {0: 'EXTEND', 1: 'REPEAT', 2: 'MIRROR'}   # GX clamp / repeat / mirror
 FE_TEXTURE_NODE_NAME = 'FE Texture'
 
@@ -4869,11 +4891,121 @@ def tpl_decode_cmpr(data, addr, width, height):
     return np.ascontiguousarray(px.reshape(by * 8, bx * 8, 4)[:height, :width])
 
 
+def tpl_untile(tiles, bx, by, tw, th):
+    """v0.37.1: (by, bx, th, tw[, c]) tile array -> one (by*th, bx*tw[, c]) picture."""
+    return np.ascontiguousarray(tiles.transpose(0, 2, 1, 3, *range(4, tiles.ndim)).reshape(by * th, bx * tw, *tiles.shape[4:]))
+
+
+def tpl_decode_i4(data, addr, width, height):
+    """v0.37.1: I4 (4-bit intensity) -> uint8 (height, width, 4), row 0 = top.
+    8x8-pixel tiles of 32 bytes, two pixels per byte (high nibble first).  Like the GX hardware the
+    intensity is also the alpha (R = G = B = A = I)."""
+    bx, by = (width + 7) // 8, (height + 7) // 8
+    size = bx * by * 32
+    if addr + size > len(data):
+        raise ValueError("image data runs past the end of the file")
+    t = np.frombuffer(data, dtype=np.uint8, count=size, offset=addr).reshape(by, bx, 8, 4)
+    v = np.stack((t >> 4, t & 15), axis=-1).reshape(by, bx, 8, 8) * 17
+    g = tpl_untile(v.astype(np.uint8), bx, by, 8, 8)[:height, :width]
+    return np.ascontiguousarray(np.stack((g, g, g, g), axis=-1))
+
+
+def tpl_decode_rgb5a3(data, addr, width, height):
+    """v0.37.1: RGB5A3 (16-bit) -> uint8 (height, width, 4), row 0 = top.
+    4x4-pixel tiles of 32 bytes, big-endian u16 per pixel.  Bit 15 set: opaque RGB555.  Bit 15 clear:
+    3-bit alpha (bits 12-14) + RGB444."""
+    bx, by = (width + 3) // 4, (height + 3) // 4
+    size = bx * by * 32
+    if addr + size > len(data):
+        raise ValueError("image data runs past the end of the file")
+    t = np.frombuffer(data, dtype=np.uint8, count=size, offset=addr).reshape(by, bx, 4, 4, 2).astype(np.int32)
+    v = (t[..., 0] << 8) | t[..., 1]
+    opaque = (v & 0x8000) != 0
+    def five(x): return (x << 3) | (x >> 2)
+    r = np.where(opaque, five((v >> 10) & 31), 17 * ((v >> 8) & 15))
+    g = np.where(opaque, five((v >> 5) & 31), 17 * ((v >> 4) & 15))
+    b = np.where(opaque, five(v & 31), 17 * (v & 15))
+    a = np.where(opaque, 255, (((v >> 12) & 7) * 255 + 3) // 7)
+    px = np.stack((r, g, b, a), axis=-1).astype(np.uint8)
+    return tpl_untile(px, bx, by, 4, 4)[:height, :width]
+
+
+def tpl_decode_i8(data, addr, width, height):
+    """v0.37.3: I8 (8-bit intensity) -> uint8 (height, width, 4), row 0 = top.
+    8x4-pixel tiles (8 wide, 4 high) of 32 bytes, one byte per pixel.  R = G = B = A = I (like I4)."""
+    bx, by = (width + 7) // 8, (height + 3) // 4
+    size = bx * by * 32
+    if addr + size > len(data):
+        raise ValueError("image data runs past the end of the file")
+    t = np.frombuffer(data, dtype=np.uint8, count=size, offset=addr).reshape(by, bx, 4, 8)
+    g = tpl_untile(t, bx, by, 8, 4)[:height, :width]
+    return np.ascontiguousarray(np.stack((g, g, g, g), axis=-1))
+
+
+def tpl_decode_ia4(data, addr, width, height):
+    """v0.37.3: IA4 (4-bit intensity + 4-bit alpha) -> uint8 (height, width, 4), row 0 = top.
+    8x4-pixel tiles of 32 bytes, one byte per pixel: high nibble = alpha, low nibble = intensity.
+    Hypothesis: the order follows IA8 (below, Strong evidence from a real image); no IA4 sample was checked.
+    (KLG's tpl.py has intensity high / alpha low for both; the IA8 data contradicts it.)"""
+    bx, by = (width + 7) // 8, (height + 3) // 4
+    size = bx * by * 32
+    if addr + size > len(data):
+        raise ValueError("image data runs past the end of the file")
+    t = np.frombuffer(data, dtype=np.uint8, count=size, offset=addr).reshape(by, bx, 4, 8)
+    a = (t >> 4) * 17
+    i = (t & 15) * 17
+    px = np.stack((i, i, i, a), axis=-1).astype(np.uint8)
+    return tpl_untile(px, bx, by, 8, 4)[:height, :width]
+
+
+def tpl_decode_ia8(data, addr, width, height):
+    """v0.37.3: IA8 (8-bit intensity + 8-bit alpha) -> uint8 (height, width, 4), row 0 = top.
+    4x4-pixel tiles of 32 bytes, two bytes per pixel: first byte = ALPHA, second = INTENSITY.
+    Strong evidence: in texpack.tpl images 2 and 3 (IA8) the second byte is 255 everywhere and the first byte
+    forms clean line patterns (white with transparent gaps); KLG's tpl.py order (intensity first) gives opaque
+    grey noise instead."""
+    bx, by = (width + 3) // 4, (height + 3) // 4
+    size = bx * by * 32
+    if addr + size > len(data):
+        raise ValueError("image data runs past the end of the file")
+    t = np.frombuffer(data, dtype=np.uint8, count=size, offset=addr).reshape(by, bx, 4, 4, 2)
+    a, i = t[..., 0], t[..., 1]
+    px = np.stack((i, i, i, a), axis=-1).astype(np.uint8)
+    return tpl_untile(px, bx, by, 4, 4)[:height, :width]
+
+
+def tpl_decode_rgb565(data, addr, width, height):
+    """v0.37.3: RGB565 (16-bit, opaque) -> uint8 (height, width, 4), row 0 = top.
+    4x4-pixel tiles of 32 bytes, big-endian u16 per pixel."""
+    bx, by = (width + 3) // 4, (height + 3) // 4
+    size = bx * by * 32
+    if addr + size > len(data):
+        raise ValueError("image data runs past the end of the file")
+    t = np.frombuffer(data, dtype=np.uint8, count=size, offset=addr).reshape(by, bx, 4, 4, 2).astype(np.int32)
+    v = (t[..., 0] << 8) | t[..., 1]
+    r, g, b = (v >> 11) & 31, (v >> 5) & 63, v & 31
+    px = np.stack(((r << 3) | (r >> 2), (g << 2) | (g >> 4), (b << 3) | (b >> 2), np.full_like(r, 255)), axis=-1).astype(np.uint8)
+    return tpl_untile(px, bx, by, 4, 4)[:height, :width]
+
+
 def tpl_decode_image(data, info):
     """Decode one image of the .tpl -> uint8 (height, width, 4), top row first."""
     if info['format'] == TPL_FORMAT_CMPR:
         return tpl_decode_cmpr(data, info['data_addr'], info['width'], info['height'])
-    raise ValueError(f"image format {info['format']} is not supported yet (only CMPR = 14)")
+    if info['format'] == TPL_FORMAT_I4:                                  # v0.37.1
+        return tpl_decode_i4(data, info['data_addr'], info['width'], info['height'])
+    if info['format'] == TPL_FORMAT_RGB5A3:                              # v0.37.1
+        return tpl_decode_rgb5a3(data, info['data_addr'], info['width'], info['height'])
+    if info['format'] == TPL_FORMAT_I8:                                  # v0.37.3
+        return tpl_decode_i8(data, info['data_addr'], info['width'], info['height'])
+    if info['format'] == TPL_FORMAT_IA4:
+        return tpl_decode_ia4(data, info['data_addr'], info['width'], info['height'])
+    if info['format'] == TPL_FORMAT_IA8:
+        return tpl_decode_ia8(data, info['data_addr'], info['width'], info['height'])
+    if info['format'] == TPL_FORMAT_RGB565:
+        return tpl_decode_rgb565(data, info['data_addr'], info['width'], info['height'])
+    raise ValueError(f"image format {info['format']} is not supported yet "
+                     f"(CMPR = 14, I4 = 0, I8 = 1, IA4 = 2, IA8 = 3, RGB565 = 4 and RGB5A3 = 5 are)")
 
 
 def tpl_png_bytes(rgba):
@@ -4887,7 +5019,7 @@ def tpl_png_bytes(rgba):
             + chunk(b'IDAT', zlib.compress(raw, 6)) + chunk(b'IEND', b''))
 
 
-def tpl_make_image(data, info, image_name, tpl_path=''):
+def tpl_make_image(data, info, image_name, tpl_path='', colorspace='sRGB', opaque=False):
     """Decode one TPL image into a new packed Blender image.
 
     v0.32.1: the colour space and alpha mode are set BEFORE the pixels are written.  Changing them on
@@ -4896,6 +5028,9 @@ def tpl_make_image(data, info, image_name, tpl_path=''):
     If the pixels do not survive (checked before and after packing), the image is rebuilt by loading
     a temporary PNG and packing that."""
     rgba = tpl_decode_image(data, info)
+    if opaque:                       # v0.37.1: a mask image (I4 intensity = alpha): keep only the grey value
+        rgba = rgba.copy()
+        rgba[..., 3] = 255
     w, h = info['width'], info['height']
     expected = (rgba[::-1].astype(np.float32) / 255.0).ravel()      # Blender rows start at the bottom
 
@@ -4905,7 +5040,7 @@ def tpl_make_image(data, info, image_name, tpl_path=''):
         return float(np.abs(buf - expected).max()) < 0.01
 
     img = bpy.data.images.new(image_name, w, h, alpha=True)
-    img.colorspace_settings.name = 'sRGB'
+    img.colorspace_settings.name = colorspace
     img.alpha_mode = 'STRAIGHT'
     img.pixels.foreach_set(expected)
     img.update()
@@ -4924,6 +5059,7 @@ def tpl_make_image(data, info, image_name, tpl_path=''):
             f.write(tpl_png_bytes(rgba))
         img = bpy.data.images.load(path, check_existing=False)
         img.name = image_name
+        img.colorspace_settings.name = colorspace
         img.alpha_mode = 'STRAIGHT'
         img.pack()
         if not intact(img):
@@ -4942,6 +5078,32 @@ def fe_material_texture_node(material):
     if node is not None and node.type == 'TEX_IMAGE':
         return node
     return next((n for n in nodes if n.type == 'TEX_IMAGE'), None)
+
+
+def fe_apply_uv_scale(material, tex):
+    """v0.37.3: a Texture Reference whose UV scale (+0x10 / +0x14) is not 1.0 (census: only when its flag byte
+    has bit 4) gets a Mapping node ('FE UV Scale') between UV Map and the Image Texture.  Only texture block 0
+    is handled; terrain and water build their own coordinates.  The +8 / +12 words stay custom properties."""
+    import json
+    if tex is None or tex.inputs['Vector'].is_linked or fe_is_terrain_material(material) or fe_is_water_material(material):
+        return
+    try:
+        refs = json.loads(str(material.get('fe_tex_flags', '[]')))
+        sx, sy = float(refs[0][3]), float(refs[0][4])
+    except Exception:
+        return
+    if abs(sx - 1.0) < 1e-6 and abs(sy - 1.0) < 1e-6:
+        return
+    nt = material.node_tree
+    uv = nt.nodes.new(type='ShaderNodeUVMap')
+    uv.name = uv.label = 'FE UV Map'
+    uv.location = (tex.location[0] - 600, 0)
+    mp = nt.nodes.new(type='ShaderNodeMapping')
+    mp.name = mp.label = 'FE UV Scale'
+    mp.location = (tex.location[0] - 300, 0)
+    mp.inputs['Scale'].default_value = (sx, sy, 1.0)
+    nt.links.new(uv.outputs['UV'], mp.inputs['Vector'])
+    nt.links.new(mp.outputs['Vector'], tex.inputs['Vector'])
 
 
 def fe_connect_texture(material, image, info=None):
@@ -4966,7 +5128,21 @@ def fe_connect_texture(material, image, info=None):
     if principled is not None and not principled.inputs['Base Color'].is_linked:
         nt.links.new(tex.outputs['Color'], principled.inputs['Base Color'])
     if mix is not None and not mix.inputs['Fac'].is_linked:
-        nt.links.new(tex.outputs['Alpha'], mix.inputs['Fac'])
+        _rp = int(material.get('fe_render_pass', 1))
+        if _rp == 0:                                           # v0.37.3: opaque list ignores texture alpha
+            mix.inputs['Fac'].default_value = 1.0
+        elif _rp == 1:                                         # v0.37.3: alpha-tested list: alpha >= 128/255 shows, else discarded
+            cut = nt.nodes.get('FE Alpha Cutoff') or nt.nodes.new(type='ShaderNodeMath')
+            cut.name = 'FE Alpha Cutoff'
+            cut.label = 'FE Alpha Cutoff (alpha >= 128/255)'
+            cut.operation = 'GREATER_THAN'
+            cut.inputs[1].default_value = 0.5                  # 127/255 = 0.498 fails, 128/255 = 0.502 passes
+            cut.location = (tex.location[0] + 250, -250)
+            nt.links.new(tex.outputs['Alpha'], cut.inputs[0])
+            nt.links.new(cut.outputs['Value'], mix.inputs['Fac'])
+        else:
+            nt.links.new(tex.outputs['Alpha'], mix.inputs['Fac'])
+    fe_apply_uv_scale(material, tex)
     return tex
 
 
@@ -5003,6 +5179,33 @@ def fe_import_tpl_images(tpl_path, game_materials, base_name=''):
     return out
 
 
+def fe_store_texture_formats(material, infos):
+    """v0.37.3: material['fe_tpl_formats'] = JSON list with the TPL format name of each texture block
+    (e.g. '["CMPR", "I4"]'), in block order."""
+    import json
+    out = []
+    for i in fe_material_tpl_indices(material):
+        out.append(TPL_FORMAT_NAMES.get(infos[i]['format'], str(infos[i]['format'])) if i < len(infos) else '?')
+    if out:
+        material['fe_tpl_formats'] = json.dumps(out)
+
+
+def fe_texture_format_pairs(materials):
+    """v0.37.3: [[material, format], ...] for the object property 'fe_texture_formats' (JSON text, since Blender
+    cannot store nested lists).  Texture block 0 is listed under the material name, further blocks as 'name#n'."""
+    import json
+    pairs = []
+    for m in materials:
+        try:
+            fmts = json.loads(str(m.get('fe_tpl_formats', '[]')))
+        except Exception:
+            fmts = []
+        nm = str(m.get('fe_original_material_name', m.name))
+        for n, f in enumerate(fmts):
+            pairs.append([nm if n == 0 else f"{nm}#{n}", f])
+    return json.dumps(pairs)
+
+
 def fe_apply_tpl_to_materials(materials, tpl_path, image_prefix=''):
     """Read *tpl_path* and (re)assign the images to already imported materials.
     Used by the 'import texture to a body' operator.  A material that already has an image made
@@ -5036,7 +5239,13 @@ def fe_apply_tpl_to_materials(materials, tpl_path, image_prefix=''):
             print(f"  [TPL] WARNING: image {idx} skipped: {e}")
             continue
         for mat in mats:
+            fe_store_texture_formats(mat, infos)           # v0.37.3
+            old_extra = fe_clear_extra_nodes(mat)          # v0.37.1: drop the nodes of an earlier import
             fe_connect_texture(mat, img, infos[idx])
+            fe_build_extra_textures(mat, data, infos, stem, tpl_path)      # v0.37.1: terrain blend / additive
+            for oi in old_extra:
+                if oi is not old and oi.users == 0:        # 'old' (the previous diffuse image) is handled below
+                    bpy.data.images.remove(oi)
             n_mats += 1
         print(f"  [TPL] image {idx}: {infos[idx]['width']}x{infos[idx]['height']} -> "
               f"{', '.join(m.name for m in mats)}" + (f" (replaced '{old.name}')" if old is not None else ""))
@@ -5046,6 +5255,308 @@ def fe_apply_tpl_to_materials(materials, tpl_path, image_prefix=''):
             img.name = f"{stem}_{idx}" if image_prefix else old_name
         n_imgs += 1
     return n_mats, n_imgs
+
+
+# =============================================================================
+# EXTRA TEXTURES, TERRAIN BLEND AND ADDITIVE MATERIALS  (v0.37.1)
+# =============================================================================
+#
+# TERRAIN (materials 'map_base' / 'map_wall' with 2+ texture blocks).  The game samples texture 0
+# (the atlas) twice -- through UV0 and through UV1 -- and mixes the two samples with a grey mask,
+# which is the image of texture block 1 (I4).  Black keeps the UV0 sample, white shows the UV1 one.
+# The mask is NOT read through a UV map: the game projects it top-down over 640 x 640 units from the
+# terrain corner, so the shader computes  U = X / 640,  V = 1 - Z / 640  from the OBJECT-space
+# position (checked by rendering bmap02 both ways: the position projection gives coherent terrain,
+# the UV0 lookup gives stripes).  The last texture block (a light/shadow overlay multiplied on top) is
+# not imported yet.
+#
+# ADDITIVE (material flag fe_additive, set at import from the submesh style flag 0x40, v0.37.3):
+# black adds nothing and light pixels add brightness.  Built as Add Shader(Transparent, Emission),
+# Emission colour = texture colour, strength = texture alpha.
+
+FE_TERRAIN_MATERIALS = ('map_base', 'map_wall')
+FE_WATER_MATERIAL = 'map_water'              # v0.37.2
+FE_WATER_TILE_UNITS = 64.0                    # v0.37.2: GUESS - world units per repeat of the water texture (looks better in Blender)
+FE_MASK_EXTENT = 640.0                       # units covered by the mask, from the terrain corner
+FE_EXTRA_PREFIX = 'FE '                      # every node created here has a name starting with this (except FE_TEXTURE_NODE_NAME)
+FE_MIX_NODES = ('FE Terrain Color', 'FE Terrain Alpha')
+
+
+def fe_socket(sockets, identifier):
+    """Socket of a node by its identifier (the Mix node has several sockets of the same name)."""
+    return next(s for s in sockets if s.identifier == identifier)
+
+
+def fe_clear_extra_nodes(material):
+    """Remove the nodes made by fe_build_extra_textures (and the UV1 / mask images they used).
+    Returns the images that were referenced by them (candidates for removal when unused)."""
+    images = []
+    if material is None or not material.use_nodes or material.node_tree is None:
+        return images
+    nt = material.node_tree
+    for node in list(nt.nodes):
+        if node.name.startswith(FE_EXTRA_PREFIX) and node.name != FE_TEXTURE_NODE_NAME:
+            img = getattr(node, 'image', None)
+            if img is not None and 'fe_tpl_index' in img and img not in images:
+                images.append(img)
+            nt.nodes.remove(node)
+    return images
+
+
+def fe_material_tpl_indices(material):
+    """Texture-block image indices of an imported material (first = diffuse), as a list of ints."""
+    import json
+    try:
+        raw = material.get('fe_tpl_indices')
+        if raw:
+            return [int(i) for i in json.loads(str(raw))]
+    except Exception:
+        pass
+    first = material.get('fe_tpl_index')
+    return [int(first)] if first is not None else []
+
+
+def fe_is_terrain_material(material):
+    name = str(material.get('fe_original_material_name', material.name)) if material is not None else ''
+    return name.split('.')[0] in FE_TERRAIN_MATERIALS and len(fe_material_tpl_indices(material)) >= 2
+
+
+def fe_build_extra_textures(material, data, infos, stem, tpl_path=''):
+    """Called after the diffuse image is connected.  Builds the terrain blend or the additive setup
+    when the material needs it.  Never raises: a failure is printed and the plain setup stays."""
+    try:
+        if fe_is_terrain_material(material):
+            fe_build_terrain_nodes(material, data, infos, stem, tpl_path)
+        elif fe_is_water_material(material):                                  # v0.37.2
+            fe_build_water_nodes(material, data, infos, stem, tpl_path)
+        elif material.get('fe_additive'):
+            fe_build_additive_nodes(material)
+    except Exception as e:
+        print(f"  [TPL] WARNING: extra texture setup of '{material.name}' failed: {e}")
+        fe_clear_extra_nodes(material)       # v0.37.2: leave no half-built node set behind
+
+
+def fe_build_terrain_nodes(material, data, infos, stem, tpl_path=''):
+    nt = material.node_tree
+    nodes, links = nt.nodes, nt.links
+    tex0 = fe_material_texture_node(material)
+    if tex0 is None or tex0.image is None:
+        return
+    mask_idx = fe_material_tpl_indices(material)[1]
+    if mask_idx >= len(infos):
+        print(f"  [TPL] WARNING: '{material.name}' wants mask image {mask_idx} but the .tpl has {len(infos)} image(s)")
+        return
+    mask_img = tpl_make_image(data, infos[mask_idx], f"{stem}_{mask_idx}", tpl_path, colorspace='Non-Color', opaque=True)
+    mask_img['fe_tpl_role'] = 'mask'
+    x0 = tex0.location[0]
+
+    def new(kind, name, loc, label=None):
+        n = nodes.new(type=kind)
+        n.name = name
+        n.label = label or name
+        n.location = loc
+        return n
+
+    # atlas through UV0 (the existing 'FE Texture' node) and through UV1 (a second node, same image)
+    uv0 = new('ShaderNodeUVMap', 'FE UV0 Map', (x0 - 400, 380))
+    uv0.uv_map = 'UVMap'
+    links.new(uv0.outputs['UV'], tex0.inputs['Vector'])
+    tex1 = new('ShaderNodeTexImage', 'FE Texture UV1', (x0, 330))
+    tex1.image = tex0.image
+    tex1.interpolation = tex0.interpolation
+    tex1.extension = tex0.extension
+    uv1 = new('ShaderNodeUVMap', 'FE UV1 Map', (x0 - 400, 230))
+    uv1.uv_map = FE_UV1_NAME
+    links.new(uv1.outputs['UV'], tex1.inputs['Vector'])
+
+    # mask: position -> (X / 640, 1 - Z / 640) -> image
+    coord = new('ShaderNodeTexCoord', 'FE Mask Coord', (x0 - 1000, -380))
+    sep = new('ShaderNodeSeparateXYZ', 'FE Mask Separate', (x0 - 800, -380))
+    mu = new('ShaderNodeMath', 'FE Mask U', (x0 - 600, -300), 'FE Mask U (X / 640)')
+    mu.operation = 'MULTIPLY'
+    mu.inputs[1].default_value = 1.0 / FE_MASK_EXTENT
+    mv = new('ShaderNodeMath', 'FE Mask V', (x0 - 600, -460), 'FE Mask V (1 - Z / 640)')
+    mv.operation = 'MULTIPLY_ADD'
+    mv.inputs[1].default_value = -1.0 / FE_MASK_EXTENT
+    mv.inputs[2].default_value = 1.0
+    comb = new('ShaderNodeCombineXYZ', 'FE Mask Combine', (x0 - 400, -380))
+    links.new(coord.outputs['Object'], sep.inputs['Vector'])
+    links.new(sep.outputs['X'], mu.inputs[0])
+    links.new(sep.outputs['Z'], mv.inputs[0])
+    links.new(mu.outputs['Value'], comb.inputs['X'])
+    links.new(mv.outputs['Value'], comb.inputs['Y'])
+    texm = new('ShaderNodeTexImage', 'FE Mask', (x0, -380))
+    texm.image = mask_img
+    texm.interpolation = 'Linear'
+    texm.extension = 'EXTEND'
+    links.new(comb.outputs['Vector'], texm.inputs['Vector'])
+
+    # colour mix: A = UV0 sample, B = UV1 sample, factor = mask
+    mixc = new('ShaderNodeMix', 'FE Terrain Color', (x0 + 300, 150))
+    mixc.data_type = 'RGBA'
+    mixc.blend_type = 'MIX'
+    mixc.clamp_factor = True
+    links.new(texm.outputs['Color'], fe_socket(mixc.inputs, 'Factor_Float'))
+    links.new(tex0.outputs['Color'], fe_socket(mixc.inputs, 'A_Color'))
+    links.new(tex1.outputs['Color'], fe_socket(mixc.inputs, 'B_Color'))
+    # alpha mix with the same mask
+    mixa = new('ShaderNodeMix', 'FE Terrain Alpha', (x0 + 300, -100))
+    mixa.data_type = 'FLOAT'
+    mixa.clamp_factor = True
+    links.new(texm.outputs['Color'], fe_socket(mixa.inputs, 'Factor_Float'))
+    links.new(tex0.outputs['Alpha'], fe_socket(mixa.inputs, 'A_Float'))
+    links.new(tex1.outputs['Alpha'], fe_socket(mixa.inputs, 'B_Float'))
+
+    # replace the single-texture links
+    principled = next((n for n in nodes if n.type == 'BSDF_PRINCIPLED'), None)
+    mix_shader = next((n for n in nodes if n.type == 'MIX_SHADER'), None)
+    if principled is not None:
+        for lk in list(principled.inputs['Base Color'].links):
+            links.remove(lk)
+        links.new(fe_socket(mixc.outputs, 'Result_Color'), principled.inputs['Base Color'])
+    if mix_shader is not None:
+        for lk in list(mix_shader.inputs['Fac'].links):
+            links.remove(lk)
+        if int(material.get('fe_render_pass', 0)) == 0:        # v0.37.3: opaque list ignores texture alpha
+            mix_shader.inputs['Fac'].default_value = 1.0
+            nodes.remove(mixa)
+        else:
+            links.new(fe_socket(mixa.outputs, 'Result_Float'), mix_shader.inputs['Fac'])
+    print(f"  [TPL] '{material.name}': terrain blend built (atlas via UV0/UV1, mask image {mask_idx}; overlay not imported)")
+
+
+def fe_is_water_material(material):
+    """v0.37.2: the 'map_water' material with two texture blocks (surface image + mask image)."""
+    name = str(material.get('fe_original_material_name', material.name)) if material is not None else ''
+    return name.split('.')[0] == FE_WATER_MATERIAL and len(fe_material_tpl_indices(material)) >= 2
+
+
+def fe_build_water_nodes(material, data, infos, stem, tpl_path=''):
+    """v0.37.3.  map_water: the mesh is a flat plane whose only UV is (0, 0), so nothing can be read from the UV
+    map.  Texture block 0 (surface) is placed from the object-space position, one repeat per 'FE Water Tile Size'
+    units (X and Z; a guess, kept because it looks better).  Texture block 1 (I4, river-shaped grey mask) is
+    projected like the terrain mask (U = X / 640, V = 1 - Z / 640; NOT tiled) and its Alpha (= intensity) drives the
+    Mix Shader factor, but the Mix Shader is bypassed: Principled BSDF -> Material Output (User decision; with the
+    Mix Shader in the path the water was invisible).  Static: the game scrolls both."""
+    nt = material.node_tree
+    nodes, links = nt.nodes, nt.links
+    tex0 = fe_material_texture_node(material)
+    if tex0 is None or tex0.image is None:
+        return
+    mask_idx = fe_material_tpl_indices(material)[1]
+    if mask_idx >= len(infos):
+        print(f"  [TPL] WARNING: '{material.name}' wants mask image {mask_idx} but the .tpl has {len(infos)} image(s)")
+        return
+    mask_img = tpl_make_image(data, infos[mask_idx], f"{stem}_{mask_idx}", tpl_path, colorspace='Non-Color', opaque=False)   # v0.37.3: keep Alpha
+    mask_img['fe_tpl_role'] = 'mask'
+    x0 = tex0.location[0]
+
+    def new(kind, name, loc, label=None):
+        n = nodes.new(type=kind)
+        n.name = name
+        n.label = label or name
+        n.location = loc
+        return n
+
+    # surface texture from position (v0.37.3: restored)
+    coord = new('ShaderNodeTexCoord', 'FE Water Coord', (x0 - 1200, 300))
+    sep = new('ShaderNodeSeparateXYZ', 'FE Water Separate', (x0 - 1000, 300))
+    tile = new('ShaderNodeValue', 'FE Water Tile Size', (x0 - 1000, 120), 'FE Water Tile Size (units per repeat)')
+    tile.outputs[0].default_value = FE_WATER_TILE_UNITS
+    du = new('ShaderNodeMath', 'FE Water U', (x0 - 800, 330), 'FE Water U (X / tile)')
+    du.operation = 'DIVIDE'
+    dv = new('ShaderNodeMath', 'FE Water V', (x0 - 800, 170), 'FE Water V (Z / tile)')
+    dv.operation = 'DIVIDE'
+    comb = new('ShaderNodeCombineXYZ', 'FE Water Combine', (x0 - 600, 250))
+    links.new(coord.outputs['Object'], sep.inputs['Vector'])
+    links.new(sep.outputs['X'], du.inputs[0])
+    links.new(tile.outputs[0], du.inputs[1])
+    links.new(sep.outputs['Z'], dv.inputs[0])
+    links.new(tile.outputs[0], dv.inputs[1])
+    links.new(du.outputs['Value'], comb.inputs['X'])
+    links.new(dv.outputs['Value'], comb.inputs['Y'])
+    links.new(comb.outputs['Vector'], tex0.inputs['Vector'])
+
+    # mask from position (same projection as the terrain mask)
+    mcoord = new('ShaderNodeTexCoord', 'FE Mask Coord', (x0 - 1200, -380))
+    msep = new('ShaderNodeSeparateXYZ', 'FE Mask Separate', (x0 - 1000, -380))
+    mu = new('ShaderNodeMath', 'FE Mask U', (x0 - 800, -300), 'FE Mask U (X / 640)')
+    mu.operation = 'MULTIPLY'
+    mu.inputs[1].default_value = 1.0 / FE_MASK_EXTENT
+    mv = new('ShaderNodeMath', 'FE Mask V', (x0 - 800, -460), 'FE Mask V (1 - Z / 640)')
+    mv.operation = 'MULTIPLY_ADD'
+    mv.inputs[1].default_value = -1.0 / FE_MASK_EXTENT
+    mv.inputs[2].default_value = 1.0
+    mcomb = new('ShaderNodeCombineXYZ', 'FE Mask Combine', (x0 - 600, -380))
+    links.new(mcoord.outputs['Object'], msep.inputs['Vector'])
+    links.new(msep.outputs['X'], mu.inputs[0])
+    links.new(msep.outputs['Z'], mv.inputs[0])
+    links.new(mu.outputs['Value'], mcomb.inputs['X'])
+    links.new(mv.outputs['Value'], mcomb.inputs['Y'])
+    texm = new('ShaderNodeTexImage', 'FE Mask', (x0, -380))
+    texm.image = mask_img
+    texm.interpolation = 'Linear'
+    texm.extension = 'EXTEND'
+    links.new(mcomb.outputs['Vector'], texm.inputs['Vector'])
+
+    # v0.37.3: the mask's Alpha drives the Mix Shader factor.
+    mix_shader = next((n for n in nodes if n.type == 'MIX_SHADER'), None)
+    if mix_shader is not None:
+        for lk in list(mix_shader.inputs['Fac'].links):
+            links.remove(lk)
+        links.new(texm.outputs['Alpha'], mix_shader.inputs['Fac'])
+    # v0.37.3 (User decision): the Mix Shader is bypassed - Principled BSDF goes straight to the Material Output
+    # (with the Mix Shader in the path the water rendered invisible).  The mask -> Mix Fac link stays for later.
+    principled = next((n for n in nodes if n.type == 'BSDF_PRINCIPLED'), None)
+    out = next((n for n in nodes if n.type == 'OUTPUT_MATERIAL'), None)
+    if principled is not None and out is not None:
+        for lk in list(out.inputs['Surface'].links):
+            links.remove(lk)
+        links.new(principled.outputs['BSDF'], out.inputs['Surface'])
+    print(f"  [TPL] '{material.name}': water set up (surface image via position, 1 repeat per {FE_WATER_TILE_UNITS:g} units; "
+          f"mask image {mask_idx} Alpha -> Mix Fac, Mix Shader bypassed; static)")
+
+
+def fe_build_additive_nodes(material):
+    nt = material.node_tree
+    nodes, links = nt.nodes, nt.links
+    tex = fe_material_texture_node(material)
+    out = next((n for n in nodes if n.type == 'OUTPUT_MATERIAL'), None)
+    transparent = next((n for n in nodes if n.type == 'BSDF_TRANSPARENT'), None)
+    if tex is None or out is None:
+        return
+    if transparent is None:
+        transparent = nodes.new(type='ShaderNodeBsdfTransparent')
+    emis = nodes.new(type='ShaderNodeEmission')
+    emis.name = emis.label = 'FE Additive Emission'
+    emis.location = (tex.location[0] + 300, -200)
+    add = nodes.new(type='ShaderNodeAddShader')
+    add.name = add.label = 'FE Additive Add'
+    add.location = (tex.location[0] + 550, 0)
+    links.new(tex.outputs['Color'], emis.inputs['Color'])
+    links.new(tex.outputs['Alpha'], emis.inputs['Strength'])
+    links.new(transparent.outputs['BSDF'], add.inputs[0])
+    links.new(emis.outputs['Emission'], add.inputs[1])
+    for lk in list(out.inputs['Surface'].links):
+        links.remove(lk)
+    links.new(add.outputs['Shader'], out.inputs['Surface'])
+    print(f"  [TPL] '{material.name}': additive blend set up (Add Shader: Transparent + Emission)")
+
+
+def fe_count_texture_images(blmat):
+    """v0.37.1: number of different images in a material's Image Texture nodes (the same image used by two
+    nodes, e.g. the UV0 and UV1 samples of a terrain material, counts once).  Nodes without an image count
+    one each; the exporter uses this for materials that are new to the game file."""
+    if blmat is None or not blmat.use_nodes or blmat.node_tree is None:
+        return 0
+    imgs, empty = set(), 0
+    for nd in blmat.node_tree.nodes:
+        if nd.type == 'TEX_IMAGE':
+            if nd.image is not None:
+                imgs.add(nd.image.name)
+            else:
+                empty += 1
+    return len(imgs) + empty
 
 
 def fe_find_existing_material(game_name):
@@ -5219,6 +5730,152 @@ def gs_build_vertex_table(origins, quant):
 #     in gs_original_data for the patch-in-place exporter.
 #   - v19.2 addition: Calls setup_shader_tree for newly created materials.
 
+# =============================================================================
+# v0.37.0  SECOND UV SET (UV1), RAW VERTEX COLOURS, PRESERVED TABLES   ===== V0.37.0-BLOCK BEGIN =====
+# =============================================================================
+#
+# WHY (bmap02 test, FE9 terrain body):
+#   * Display-list vertices of "hu" chunks (format2 bit 7) carry a SECOND UV index.  The terrain blend samples the
+#     material's first texture a second time through it (see "Terrain Texture Blending" in the Tellius archive).
+#     Up to v0.36.6 the importer skipped it and the exporter wrote 0 for every vertex, so every vertex sampled UV
+#     entry 0 = a pure black texel -> solid black patches in game.  (Confirmed in game: restoring UV1 alone fixes it.)
+#   * The colour table was rebuilt from Blender's colour attribute (Blender stores byte colours sRGB-encoded, the
+#     importer treated the game bytes as linear, so bright values merged: 204 -> 138 entries) while the display list
+#     kept the ORIGINAL colour indices -> 384 vertices pointed past the end of the table.
+#   * The normal table was rebuilt from Blender's own vertex normals even for unmodified meshes.
+#
+# UV1 lives in a second Blender UV map called FE_UV1.  UV maps are per face CORNER, so UV1 follows the corner when
+# vertices or faces are added or removed.  The exporter looks every corner's UV1 up in the shared UV table
+# (the same table UV0 uses) and appends a new entry when the coordinate is not in it.
+#
+# Vertex colours are imported as the exact game bytes (color_srgb) so Vertex Paint shows what the game uses.  The
+# object gets fe_col_raw = 1; objects imported before v0.37.0 do not have it and keep the old linear read.
+
+FE_UV1_NAME = "FE_UV1"
+
+
+def fe_uv0_layer(mesh):
+    """v0.37.0: the UV map that carries UV0 = the active map, unless that is FE_UV1 (then the first other map)."""
+    layers = mesh.uv_layers
+    act = layers.active
+    if act is not None and act.name != FE_UV1_NAME:
+        return act
+    for layer in layers:
+        if layer.name != FE_UV1_NAME:
+            return layer
+    return None
+
+
+def fe_uv_raw_pair(uv, uv_scale):
+    """v0.37.0: Blender (u, v) -> the (u, v) int16 pair of the file's UV table (V is flipped on import)."""
+    return (max(-32768, min(32767, int(round(uv[0] * uv_scale)))),
+            max(-32768, min(32767, int(round((1.0 - uv[1]) * uv_scale)))))
+
+
+def fe_uv1_loop_indices(loop_uvs, uv_table, uv_scale, stored=None):
+    """v0.37.0: UV table index for every corner's UV1 coordinate.
+
+    loop_uvs  [(u, v)] per corner in polygon order.   uv_table  {index: (u_raw, v_raw)} - extended IN PLACE with a
+    new entry for every coordinate that is not in it yet.   stored  the per-corner indices saved at import
+    (gs_loop_uv1_indices) or None.
+    Returns (indices, modified, new_entries).  modified is False only when a stored list of the right length
+    exists and every corner still has the coordinate of its stored index; the exporter then replays the original
+    display list (which keeps the original UV1 indices byte for byte)."""
+    first = {}
+    for idx in sorted(uv_table):
+        first.setdefault(tuple(uv_table[idx]), idx)
+    nxt = (max(uv_table) + 1) if uv_table else 0
+    out, n_new = [], 0
+    pairs = [fe_uv_raw_pair(uv, uv_scale) for uv in loop_uvs]
+    for pair in pairs:
+        idx = first.get(pair)
+        if idx is None:
+            idx = first[pair] = nxt
+            uv_table[nxt] = pair
+            nxt += 1
+            n_new += 1
+        out.append(idx)
+    modified = True
+    if stored is not None and len(stored) == len(pairs):
+        modified = False
+        for pair, old in zip(pairs, stored):
+            if old >= 0 and tuple(uv_table.get(old, (None, None))) != pair:
+                modified = True
+                break
+    return out, modified, n_new
+
+
+def fe_col_is_raw(obj):
+    """v0.37.0: True for objects imported with raw colour bytes (fe_col_raw = 1)."""
+    return bool(obj.get('fe_col_raw', 0))
+
+
+def fe_srgb_encode(x):
+    x = max(0.0, min(1.0, x))
+    return 12.92 * x if x <= 0.0031308 else 1.055 * (x ** (1.0 / 2.4)) - 0.055
+
+
+def fe_srgb_decode(x):
+    x = max(0.0, min(1.0, x))
+    return x / 12.92 if x <= 0.04045 else ((x + 0.055) / 1.055) ** 2.4
+
+
+def fe_get_rgba(item, raw=True):
+    """v0.37.0: (r, g, b, a) game bytes of one colour-attribute element.  raw=True reads the stored byte
+    (color_srgb); raw=False is the pre-v0.37.0 linear read."""
+    if raw:
+        if hasattr(item, 'color_srgb'):
+            c = tuple(item.color_srgb)
+        else:
+            c = tuple(fe_srgb_encode(x) for x in item.color[:3]) + (item.color[3],)
+    else:
+        c = tuple(item.color)
+    return tuple(max(0, min(255, int(round(x * 255)))) for x in c[:4])
+
+
+def fe_set_rgba(item, rgba):
+    """v0.37.0: store the exact game bytes (see fe_get_rgba)."""
+    c = tuple(v / 255.0 for v in rgba[:4])
+    if hasattr(item, 'color_srgb'):
+        item.color_srgb = c
+    else:
+        item.color = tuple(fe_srgb_decode(x) for x in c[:3]) + (c[3],)
+
+
+def fe_read_color_table(raw):
+    """v0.37.0: the colour table [(r, g, b, a)] of a .gs file image (header +0x50 pointer, +0x72 count)."""
+    ptr = struct.unpack_from('>I', raw, 0x50)[0]
+    n = struct.unpack_from('>H', raw, 0x72)[0]
+    base = ptr + 0x20
+    if not ptr or not n or base + 4 * n > len(raw):
+        return []
+    return [tuple(raw[base + 4 * i: base + 4 * i + 4]) for i in range(n)]
+
+
+def fe_read_normal_table(raw, offset, count):
+    """v0.37.0: [(nx, ny, nz)] int8 triples at an absolute file offset."""
+    if not offset or not count or offset + 3 * count > len(raw):
+        return []
+    return [struct.unpack_from('>bbb', raw, offset + 3 * i) for i in range(count)]
+
+
+def fe_color_plan(loop_rgba, orig_table, stored, tol=0):
+    """v0.37.0: did the user paint anything?  loop_rgba = current bytes per corner (polygon order), stored =
+    the original colour index of every corner (gs_loop_color_indices).  Returns (unchanged, indices): when every
+    corner still has its original colour (within tol) the exporter keeps the ORIGINAL colour table and indices."""
+    if orig_table and stored and len(stored) == len(loop_rgba):
+        for rgba, idx in zip(loop_rgba, stored):
+            if not 0 <= idx < len(orig_table):
+                return False, None
+            if any(abs(a - b) > tol for a, b in zip(rgba, orig_table[idx])):
+                return False, None
+        return True, list(stored)
+    return False, None
+
+
+# ===== V0.37.0-BLOCK END =====
+
+
 def create_blender_mesh(name, mesh_data, tpl_path='', merge_materials=False, image_prefix=''):
     """Create a Blender mesh object from parsed .gs data."""
     import json
@@ -5264,6 +5921,8 @@ def create_blender_mesh(name, mesh_data, tpl_path='', merge_materials=False, ima
     faces         = [[f[0] for f in face] for face in faces_raw]
     face_uvs      = [[f[2] for f in face] for face in faces_raw]
     face_colors   = [[f[3] if len(f) > 3 else 0 for f in face] for face in faces_raw]
+    face_uv1      = [[f[4] if len(f) > 4 else -1 for f in face] for face in faces_raw]   # v0.37.0
+    has_uv1       = any(u >= 0 for fu1_ in face_uv1 for u in fu1_)                        # v0.37.0
     colors_table  = mesh_data.get('colors', [])
     face_mat_indices = mesh_data.get('face_mat_indices', [])
 
@@ -5310,7 +5969,8 @@ def create_blender_mesh(name, mesh_data, tpl_path='', merge_materials=False, ima
         fc  = face_colors[fi] if fi < len(face_colors) else []
         mi  = int(face_mat_indices[fi]) if fi < len(face_mat_indices) else 0
         ci  = _face_to_chunk.get(fi, -1)
-        payload = (fu, mi, ci, fc)
+        fu1 = face_uv1[fi] if fi < len(face_uv1) else []
+        payload = (fu, mi, ci, fc, fu1)       # v0.37.0: + UV1 indices
 
         key_fwd = tuple(fv)
         key_rev = tuple(reversed(fv))
@@ -5323,7 +5983,7 @@ def create_blender_mesh(name, mesh_data, tpl_path='', merge_materials=False, ima
         # Store reversed-UV payload under reversed key (handles winding flips)
         if key_rev not in vtuple_to_payloads:
             vtuple_to_payloads[key_rev] = _deque()
-        vtuple_to_payloads[key_rev].append((list(reversed(fu)), mi, ci, list(reversed(fc))))
+        vtuple_to_payloads[key_rev].append((list(reversed(fu)), mi, ci, list(reversed(fc)), list(reversed(fu1))))
 
     # ── Build mesh geometry ───────────────────────────────────────────────────
     mesh.from_pydata(vertices, [], faces)
@@ -5397,6 +6057,11 @@ def create_blender_mesh(name, mesh_data, tpl_path='', merge_materials=False, ima
         rgba = mat_info.get('diffuse_rgba', [204, 204, 204, 255])
         if is_new and hasattr(mat, 'diffuse_color') and len(rgba) >= 4:
             mat.diffuse_color = tuple(c / 255.0 for c in rgba[:4])
+        if is_new:                        # v0.37.3: flag driven; replaces the v0.37.1 'blended + diffuse alpha 0' guess
+            _sf = int(mat_info.get('style_flags', 0))
+            mat['fe_style_flags'] = _sf
+            if _sf & FE_STYLE_ADDITIVE:
+                mat['fe_additive'] = 1
 
         tpl_blocks = mat_info.get('tpl_blocks', [])
         if tpl_blocks:
@@ -5406,9 +6071,13 @@ def create_blender_mesh(name, mesh_data, tpl_path='', merge_materials=False, ima
                 mat['fe_tpl_indices'] = json.dumps(
                     [t['tpl_idx'] for t in tpl_blocks]
                 )
-                if tpl_path:
+                if tpl_path and mat_name.split('.')[0] not in FE_TERRAIN_MATERIALS + (FE_WATER_MATERIAL,):      # v0.37.1/2: terrain and water use block 1 as well
                     print(f"  [TPL] WARNING: material '{mat_name}' has {len(tpl_blocks)} texture blocks; "
                           f"only the first (image {tpl_blocks[0]['tpl_idx']}) is used")
+        if is_new and tpl_blocks:         # v0.37.3: Texture Reference extras (flag byte, +8/+12 words, UV scale)
+            mat['fe_tex_flags'] = json.dumps([[t.get('flag_byte', 1), t.get('word8', 0), t.get('word12', 0),
+                                               round(t.get('uv_sx', 1.0), 6), round(t.get('uv_sy', 1.0), 6)]
+                                              for t in tpl_blocks])
         model_mats.append(mat)
 
         obj.data.materials.append(mat)
@@ -5417,6 +6086,7 @@ def create_blender_mesh(name, mesh_data, tpl_path='', merge_materials=False, ima
         try:
             n_mats, n_imgs = fe_apply_tpl_to_materials(model_mats, tpl_path, image_prefix)
             obj['fe_tpl_filename'] = os.path.basename(tpl_path)      # v0.35.4: original .tpl name, for lookup
+            obj['fe_texture_formats'] = fe_texture_format_pairs(model_mats)      # v0.37.3
             print(f"  [TPL] {n_imgs} image(s) applied to {n_mats} material(s)")
         except Exception as e:
             print(f"  [TPL] WARNING: texture import failed: {e}")
@@ -5434,6 +6104,9 @@ def create_blender_mesh(name, mesh_data, tpl_path='', merge_materials=False, ima
     # patch-in-place exporter).
 
     uvl          = mesh.uv_layers.new(name="UVMap") if uvs else None
+    uvl1         = mesh.uv_layers.new(name=FE_UV1_NAME) if (uvs and has_uv1) else None     # v0.37.0
+    if uvl1 is not None and uvl is not None:
+        mesh.uv_layers.active = uvl            # UV0 stays the active map
     uv_assigned  = 0
     uv_skipped   = 0
     uv_missing   = 0
@@ -5454,6 +6127,7 @@ def create_blender_mesh(name, mesh_data, tpl_path='', merge_materials=False, ima
     # as a mesh custom property.  This replaces the old gs_original_data entry
     # so the JSON blob stays a reasonable size.
     surviving_loop_uv = []
+    surviving_loop_uv1 = []      # v0.37.0
     surviving_loop_colors = []
 
     # Used to rebuild loop_uv_indices in surviving-polygon order.
@@ -5465,7 +6139,7 @@ def create_blender_mesh(name, mesh_data, tpl_path='', merge_materials=False, ima
 
         if dq and len(dq) > 0:
             payload = dq.popleft()
-            fu, mi, ci, fc = (payload if len(payload) >= 4 else (payload[0], payload[1], payload[2], []))
+            fu, mi, ci, fc, fu1 = payload
             # Also consume the mirrored reversed entry so the deque stays in sync.
             key_rev = tuple(reversed(key))
             if key_rev != key:
@@ -5477,6 +6151,7 @@ def create_blender_mesh(name, mesh_data, tpl_path='', merge_materials=False, ima
             mi = 0
             ci = -1
             fc = []
+            fu1 = []
             uv_missing  += len(poly.vertices)
             mat_missing += 1
 
@@ -5508,6 +6183,16 @@ def create_blender_mesh(name, mesh_data, tpl_path='', merge_materials=False, ima
                 surviving_loop_uv.append(0)
                 uv_skipped += 1
 
+        # v0.37.0: second UV set
+        if uvl1 is not None:
+            for corner_i, li in enumerate(poly.loop_indices):
+                u1 = fu1[corner_i] if corner_i < len(fu1) else -1
+                surviving_loop_uv1.append(u1)
+                if 0 <= u1 < len(uvs):
+                    uvl1.data[li].uv = uvs[u1]
+                elif corner_i < len(fu) and 0 <= fu[corner_i] < len(uvs):
+                    uvl1.data[li].uv = uvs[fu[corner_i]]      # chunk without UV1: same as UV0
+
         # Vertex color assignment per loop corner
         for corner_i, li in enumerate(poly.loop_indices):
             if corner_i < len(fc):
@@ -5523,7 +6208,8 @@ def create_blender_mesh(name, mesh_data, tpl_path='', merge_materials=False, ima
         for li, ci in enumerate(surviving_loop_colors):
             if ci < len(colors_table):
                 rgba_bytes = colors_table[ci]
-                col_attr.data[li].color = tuple(c / 255.0 for c in rgba_bytes[:4])
+                fe_set_rgba(col_attr.data[li], rgba_bytes)       # v0.37.0: exact game bytes
+        obj['fe_col_raw'] = 1                                # v0.37.0: exporter reads color_srgb for this object
 
     # ── Store per-loop UV indices for export ──────────────────────────────────
     # Store as a separate mesh custom property to keep gs_original_data small.
@@ -5534,6 +6220,9 @@ def create_blender_mesh(name, mesh_data, tpl_path='', merge_materials=False, ima
     import json as _json
     obj['gs_loop_uv_indices'] = _json.dumps(surviving_loop_uv)
     obj['gs_loop_color_indices'] = _json.dumps(surviving_loop_colors)
+    if uvl1 is not None:
+        obj['gs_loop_uv1_indices'] = _json.dumps(surviving_loop_uv1)      # v0.37.0
+        print(f"  [v0.37.0] second UV map '{FE_UV1_NAME}' created ({len(surviving_loop_uv1)} corners)")
     mat_names = [m['name'] for m in game_materials]
     print(f"  Mesh '{name}': {len(mesh.vertices)} verts, {len(mesh.polygons)} faces, "
           f"{len(game_materials)} materials {mat_names}")
@@ -5547,6 +6236,11 @@ def create_blender_mesh(name, mesh_data, tpl_path='', merge_materials=False, ima
         print(f"    INFO: {n_removed} degenerate face(s) removed by validate() "
               f"— UV/mat data rebuilt from surviving polygon order.")
 
+    # v0.37.3: the game's strips are wound clockwise, so the faces built above point their Blender normals inward.
+    # Flip them now so the imported mesh has outward normals like any Blender-made mesh; the exporters flip the
+    # winding back temporarily (fe_export_winding), so the stored per-loop lists above keep matching.
+    fe_flip_mesh_winding(mesh)
+    mesh['fe_winding_flipped'] = 1
     return obj
 
 
@@ -5871,6 +6565,7 @@ def gs_write_composite(raw_orig, data, log=print):
         tmpl = next((c for c in chunks if c['cb'] == a['cb'] and not c['fmt'] & 0x400), None) \
             or next((c for c in chunks if not c['fmt'] & 0x400), chunks[0])
         fmt = (0x2000 * (lid + 1)) | 0x1800 | (1 if a['cb'] else 0)       # render pass, double-sided, composite bit
+        fmt |= int(a.get('style', 0)) & FE_STYLE_MASK                      # v0.37.3: additive / subtractive / no-Z / average-light
         rec = bytearray(tmpl['rec'])
         struct.pack_into('>H', rec, 8, fmt)
         rec[11] = midx
@@ -6214,8 +6909,9 @@ def gs_write_composite(raw_orig, data, log=print):
     return bytes(out), info
 
 
-def gs_corner_colors(mesh):
-    """v0.34.6: [rgba bytes per loop] from the 'Col' colour attribute (or the first colour attribute), or None."""
+def gs_corner_colors(mesh, raw=False):
+    """v0.34.6: [rgba bytes per loop] from the 'Col' colour attribute (or the first colour attribute), or None.
+    v0.37.0: raw=True reads the exact stored bytes (objects with fe_col_raw), raw=False the old linear read."""
     attr = mesh.color_attributes.get("Col")
     if attr is None and len(mesh.color_attributes):
         attr = mesh.color_attributes[0]
@@ -6224,9 +6920,9 @@ def gs_corner_colors(mesh):
     out = []
     if attr.domain == 'CORNER':
         for d in attr.data:
-            out.append(tuple(int(round(x * 255)) for x in d.color[:4]))
+            out.append(fe_get_rgba(d, raw))
     else:
-        by_vertex = [tuple(int(round(x * 255)) for x in d.color[:4]) for d in attr.data]
+        by_vertex = [fe_get_rgba(d, raw) for d in attr.data]
         out = [by_vertex[l.vertex_index] for l in mesh.loops]
     return out
 
@@ -6252,8 +6948,8 @@ def gs_collect_addons(verts, addon_objs, chunk_mode='BLENDED', mat_name_mode='OR
             w = [(grp[g.group], g.weight) for g in v.groups if g.group in grp and g.weight > 0]
             _co, _nrm = fe_seed_unmap(tuple(v.co), tuple(v.normal), w, seed_map)      # v0.36.2: seed pose -> stored
             verts.append({'co': _co, 'nrm': _nrm, 'w': w, 'orig': -1})
-        uvl = mesh.uv_layers.active
-        loop_cols = gs_corner_colors(mesh)
+        uvl = fe_uv0_layer(mesh)                                  # v0.37.0
+        loop_cols = gs_corner_colors(mesh, fe_col_is_raw(obj))
         flag_attr = mesh.attributes.get('fe_chunk_color')
         by_slot, n_quad, slot_color = {}, 0, {}
         for poly in mesh.polygons:
@@ -6286,6 +6982,7 @@ def gs_collect_addons(verts, addon_objs, chunk_mode='BLENDED', mat_name_mode='OR
             addons.append({'mat': {'name': fe_material_export_name(mat, mat_name_mode, 'addon_material'),
                                    'diff': diff, 'spec': [0, 0, 0, 255]},
                            'list': int(mat.get('fe_render_pass', 0)) if mat is not None else 0,
+                           'style': int(mat.get('fe_style_flags', 0)) & FE_STYLE_MASK if mat is not None else 0,   # v0.37.3
                            'cb': chunk_mode != 'SINGLE', 'bone': tot.most_common(1)[0][0], 'faces': faces,
                            'color': bool(slot_color.get(slot))})
     return addons, problems
@@ -6314,8 +7011,8 @@ def gs_collect_composite(mesh_obj, gs, addon_objs=None, chunk_mode='BLENDED', ma
     n_orig = len(gs.get('chunk_face_starts', []))
     attr = mesh.attributes.get('fe_chunk_index')
     orig_polys = mesh_obj.get('gs_orig_poly_count', None)
-    uvl = mesh.uv_layers.active
-    main_cols = gs_corner_colors(mesh)           # v0.34.6
+    uvl = fe_uv0_layer(mesh)                       # v0.37.0
+    main_cols = gs_corner_colors(mesh, fe_col_is_raw(mesh_obj))           # v0.34.6, v0.37.0
     chunks = [[] for _ in range(n_orig)]
     problems = []
     n_new = n_quad = 0
@@ -6344,7 +7041,65 @@ def gs_collect_composite(mesh_obj, gs, addon_objs=None, chunk_mode='BLENDED', ma
     return {'verts': verts, 'chunks': chunks, 'addons': addons}, problems
 
 
-def export_gs_composite(mesh_obj, filepath, addon_mesh_objs=None, addon_chunk_mode='BLENDED', mat_name_mode='ORIGINAL',
+FE_WINDING_KEY = 'fe_winding_flipped'      # v0.37.3: mesh property set on import (faces were flipped to point outward)
+
+
+def fe_flip_mesh_winding(mesh):
+    """v0.37.3: reverse the winding of every face of *mesh* (corner data such as UVs and colors stays with its
+    vertex).  Calling it twice restores the original loop order exactly."""
+    try:
+        mesh.flip_normals()
+    except Exception:
+        import bmesh
+        bm = bmesh.new()
+        try:
+            bm.from_mesh(mesh)
+            bmesh.ops.reverse_faces(bm, faces=list(bm.faces))
+            bm.to_mesh(mesh)
+        finally:
+            bm.free()
+    mesh.update()
+
+
+def fe_export_winding_meshes(mesh_obj, addon_mesh_objs=None):
+    """v0.37.3: the mesh datablocks the exporters must flip back to the game's winding: the main mesh when it was
+    flipped on import (older imports keep the old behavior), and every addon mesh (Blender-made meshes are
+    wound counter-clockwise)."""
+    meshes = []
+    main = getattr(mesh_obj, 'data', None) if getattr(mesh_obj, 'type', '') == 'MESH' else None
+    if main is not None and main.get(FE_WINDING_KEY):
+        meshes.append(main)
+    for ao in (addon_mesh_objs or []):
+        if ao is not None and getattr(ao, 'type', '') == 'MESH' and ao.data not in meshes:
+            meshes.append(ao.data)
+    return meshes
+
+
+def export_gs_composite(mesh_obj, filepath, addon_mesh_objs=None, *args, **kwargs):
+    """v0.37.3: export_gs_composite_core with the meshes temporarily flipped back to the game's winding."""
+    meshes = fe_export_winding_meshes(mesh_obj, addon_mesh_objs)
+    for me in meshes:
+        fe_flip_mesh_winding(me)
+    try:
+        return export_gs_composite_core(mesh_obj, filepath, addon_mesh_objs, *args, **kwargs)
+    finally:
+        for me in meshes:
+            fe_flip_mesh_winding(me)
+
+
+def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, *args, **kwargs):
+    """v0.37.3: export_gs_full_rebuild_core with the meshes temporarily flipped back to the game's winding."""
+    meshes = fe_export_winding_meshes(mesh_obj, addon_mesh_objs)
+    for me in meshes:
+        fe_flip_mesh_winding(me)
+    try:
+        return export_gs_full_rebuild_core(mesh_obj, filepath, addon_mesh_objs, *args, **kwargs)
+    finally:
+        for me in meshes:
+            fe_flip_mesh_winding(me)
+
+
+def export_gs_composite_core(mesh_obj, filepath, addon_mesh_objs=None, addon_chunk_mode='BLENDED', mat_name_mode='ORIGINAL',
                         color_mode='BLENDER', seed_map=None):
     """Composite-body export (v0.34.3; addon meshes v0.34.5).  Returns (True, message) or (False, reason)."""
     import json
@@ -6429,7 +7184,7 @@ def gs_original_chunk_lists(raw, first_chunk_addr, n_chunks):
     return [of_addr.get(first_chunk_addr + 32 * i, 0) for i in range(n_chunks)]
 
 
-def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BLENDER', append_new_bones=True,
+def export_gs_full_rebuild_core(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BLENDER', append_new_bones=True,
                            mat_name_mode='ORIGINAL', addon_chunk_mode='BLENDED', seed_map=None,
                            ref_skeleton=None, written_skeleton=None):
     """Full-rebuild .gs exporter — v13.
@@ -6463,6 +7218,17 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
 
     gs       = json.loads(str(gs_json))
     raw_orig = bytearray(bytes.fromhex(gs['file_data_hex']))
+
+    # v0.37.0: objects still in Edit Mode keep their edits in a BMesh; the mesh's
+    # attribute / UV / colour arrays are empty until the edit data is written back.
+    # Flush it (no mode change) so exporting directly from Edit Mode works.
+    for _eo in [mesh_obj] + list(addon_mesh_objs or []):
+        try:
+            if getattr(_eo, 'mode', 'OBJECT') == 'EDIT':
+                _eo.update_from_editmode()
+                print(f"  [v0.37.0] '{_eo.name}' was in Edit Mode: edit data flushed before export")
+        except Exception as _e:
+            print(f"  [v0.37.0] could not flush Edit Mode data of '{_eo.name}': {_e}")
     mesh     = mesh_obj.data
 
     print(f"\n=== EXPORT START DEBUG ===")
@@ -6479,9 +7245,10 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
 
     if gs.get('used_composite', False):
         # v0.34.3: composite (blended) bodies have their own exporter
-        return export_gs_composite(mesh_obj, filepath, addon_mesh_objs=addon_mesh_objs,
-                                   addon_chunk_mode=addon_chunk_mode, mat_name_mode=mat_name_mode,
-                                   color_mode=vc_mode, seed_map=seed_map)
+        # v0.37.3: the core, not the wrapper - the meshes are already flipped back by export_gs_full_rebuild
+        return export_gs_composite_core(mesh_obj, filepath, addon_mesh_objs=addon_mesh_objs,
+                                        addon_chunk_mode=addon_chunk_mode, mat_name_mode=mat_name_mode,
+                                        color_mode=vc_mode, seed_map=seed_map)
 
     # ── Preserved verbatim header regions ────────────────────────────────────
 
@@ -6624,12 +7391,7 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
             materials_out.append(mat)
         else:
             # New material — synthesise TPL info blocks with sequential indices.
-            tex_node_count = 0
-            if blmat and blmat.use_nodes and blmat.node_tree:
-                tex_node_count = sum(
-                    1 for nd in blmat.node_tree.nodes
-                    if nd.type == 'TEX_IMAGE'
-                )
+            tex_node_count = fe_count_texture_images(blmat)      # v0.37.1: distinct images
             if tex_node_count == 0:
                 tex_node_count = 1   # always write at least one TPL block
 
@@ -6666,12 +7428,7 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
                 amat_name = fe_material_export_name(amat, mat_name_mode)   # v0.32.0
                 if amat_name in existing_names:
                     continue
-                tex_node_count = 0
-                if amat.use_nodes and amat.node_tree:
-                    tex_node_count = sum(
-                        1 for nd in amat.node_tree.nodes
-                        if nd.type == 'TEX_IMAGE'
-                    )
+                tex_node_count = fe_count_texture_images(amat)      # v0.37.1: distinct images
                 if tex_node_count == 0:
                     tex_node_count = 1
                 tpl_blocks = [
@@ -7007,6 +7764,11 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
 
     # Read fe_chunk_index attribute
     chunk_attr = mesh.attributes.get("fe_chunk_index")
+    if chunk_attr is not None and len(chunk_attr.data) != n_mesh_faces:
+        # v0.37.0: clear message instead of an IndexError (usually: mesh still in Edit Mode)
+        return False, ("The mesh's per-face data is not readable (fe_chunk_index has "
+                       f"{len(chunk_attr.data)} entries for {n_mesh_faces} faces). "
+                       "Switch to Object Mode and export again.")
 
     # Blender's Join operation always appends new geometry at the end of the
     # existing mesh's polygon array.  Any polygon with index >= gs_orig_poly_count
@@ -7265,7 +8027,7 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
 
     UV_ROUND = 8
 
-    uvl           = mesh.uv_layers.active
+    uvl           = fe_uv0_layer(mesh)      # v0.37.0: never FE_UV1
     uv_table      = []
     uv_key_to_idx = {}
 
@@ -7410,6 +8172,7 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
     loop_color_arr = {}
     col_bytes = bytearray()
     col_count = 0
+    col_was_modified = (vc_mode != 'BLENDER')    # v0.37.0: WHITE / NONE cannot reuse the original colour indices
 
     if vc_mode in ('BLENDER', 'WHITE'):
         if vc_mode == 'WHITE':
@@ -7422,15 +8185,33 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
         else:  # BLENDER
             _col_attr = mesh.color_attributes.get("Col")
             if _col_attr:
-                for poly in mesh.polygons:
-                    for li in poly.loop_indices:
-                        r, g, b, a = _col_attr.data[li].color
-                        key = (round(r * 255), round(g * 255), round(b * 255), round(a * 255))
+                # v0.37.0: read the exact game bytes; when no corner was painted keep the ORIGINAL colour table and
+                # indices (the display list is then replayed untouched).  Painted meshes get a rebuilt table and
+                # fresh indices, which needs the greedy display-list builder (col_was_modified).
+                _col_raw   = fe_col_is_raw(mesh_obj)
+                _col_loops = [li for poly in mesh.polygons for li in poly.loop_indices]
+                _col_rgba  = [fe_get_rgba(_col_attr.data[li], _col_raw) for li in _col_loops]
+                _col_orig  = fe_read_color_table(raw_orig)
+                try:
+                    _col_stored = json.loads(str(mesh_obj.get('gs_loop_color_indices')))
+                except Exception:
+                    _col_stored = None
+                _col_same, _col_idx = fe_color_plan(_col_rgba, _col_orig, _col_stored, 0 if _col_raw else 2)
+                if _col_same:
+                    col_table = [bytearray(c_) for c_ in _col_orig]
+                    for i_, c_ in enumerate(_col_orig):
+                        col_key_to_idx.setdefault(tuple(c_), i_)
+                    for li, ci_ in zip(_col_loops, _col_idx):
+                        loop_color_arr[li] = ci_
+                    print(f"  [v0.37.0] vertex colours unchanged: original colour table kept ({len(col_table)} entries)")
+                else:
+                    col_was_modified = True
+                    for li, key in zip(_col_loops, _col_rgba):
                         if key not in col_key_to_idx:
                             col_key_to_idx[key] = len(col_table)
                             col_table.append(bytearray(key))
                         loop_color_arr[li] = col_key_to_idx[key]
-                print(f"  Blender vertex color table: {len(col_table)} unique entries for {len(loop_color_arr)} loops")
+                    print(f"  Blender vertex color table: {len(col_table)} unique entries for {len(loop_color_arr)} loops")
             else:
                 print(f"  WARNING: No color attribute found on mesh, using index 0 for all")
                 for poly in mesh.polygons:
@@ -7495,6 +8276,36 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
             mesh_obj['gs_uv_count'] = orig_uv_count
         if uv_was_modified:
             print(f"  UV was modified (scaled/edited) — will use greedy mode for all chunks")
+
+    # ── v0.37.0: second UV set (UV1) -> UV table index of every corner ──────────
+    # FE_UV1 is a per-corner UV map, so it survives added / removed vertices and faces.  Every corner's
+    # coordinate is looked up in the shared UV table; a coordinate that is not in it gets a new entry.
+    # Meshes without an FE_UV1 map (imported before v0.37.0): chunks replayed in original-order mode keep their
+    # original UV1 indices; rebuilt chunks use UV0 for UV1 (never the black entry 0).
+    loop_uv1_arr = {}
+    uv1_was_modified = False
+    uvl1 = mesh.uv_layers.get(FE_UV1_NAME)
+    if uvl1 is not None and orig_uv_table:
+        _flat1 = [li for poly in mesh.polygons for li in poly.loop_indices]
+        _crd1 = [tuple(uvl1.data[li].uv) if li < len(uvl1.data) else (0.0, 0.0) for li in _flat1]
+        try:
+            _stored1 = _json_uv.loads(str(mesh_obj.get('gs_loop_uv1_indices')))
+        except Exception:
+            _stored1 = None
+        _idx1, uv1_was_modified, _n_new1 = fe_uv1_loop_indices(_crd1, orig_uv_table, uv_scale, _stored1)
+        for li, ui_ in zip(_flat1, _idx1):
+            loop_uv1_arr[li] = ui_
+        if _n_new1:
+            orig_uv_count = max(orig_uv_count, max(orig_uv_table) + 1)
+            mesh_obj['gs_uv_count'] = orig_uv_count
+        print(f"  [v0.37.0] UV1: {len(_flat1)} corners, {_n_new1} new UV table entries, "
+              f"{'edited' if uv1_was_modified else 'unchanged'}")
+    else:
+        for poly in mesh.polygons:
+            for li in poly.loop_indices:
+                loop_uv1_arr[li] = loop_uv_arr.get(li, 0)
+    if uv1_was_modified or col_was_modified:
+        uv_was_modified = True            # forces the greedy display-list builder (original-order mode replays old indices)
 
     print(f"\n=== UV DEBUG ===")
     print(f"  UV count after deduplication: {uv_count}")
@@ -7601,6 +8412,24 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
     else:
         CHAR_GX_ATTR = bytes([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x56, 0x01])
 
+    # ── v0.37.0: unmodified mesh -> keep the ORIGINAL normal table and indices ───────────────────────────────
+    # The table used to be rebuilt from Blender's own vertex normals even when nothing changed.  When the vertex
+    # table is byte-identical to the original, no face was added, no addon is joined and no UV / UV1 / colour was
+    # edited, every chunk is replayed in original-order mode, which then writes the original normal indices.
+    normals_preserved = False
+    _n_off, _n_cnt = gs.get('norm_offset', 0), gs.get('norm_count', 0)
+    _v_off, _v_cnt = gs.get('vertex_offset', 0), gs.get('vertex_count', 0)
+    if (not uv_was_modified and not new_faces_unclaimed and not addon_mesh_objs and _n_off and _n_cnt
+            and _v_off and bytes(pos_bytes) == bytes(raw_orig[_v_off:_v_off + 6 * _v_cnt])):
+        _orig_nrm = fe_read_normal_table(raw_orig, _n_off, _n_cnt)
+        if _orig_nrm:
+            nrm_table = _orig_nrm
+            nrm_bytes = bytearray(raw_orig[_n_off:_n_off + 3 * _n_cnt])
+            nrm_bytes += b'\x00' * ((4 - len(nrm_bytes) % 4) % 4)
+            n_count = _n_cnt
+            normals_preserved = True
+            print(f"  [v0.37.0] vertex table unchanged: original normal table kept ({n_count} entries)")
+
     def build_display_list(face_indices, chunk_bone_ids, use_sb=True, hc=False, hu=False,
                            orig_vert_tuples=None, orig_strip_lengths=None,
                            orig_to_blender_map=None):
@@ -7684,6 +8513,7 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
                         break
                     tup = orig_vert_tuples[idx]
                     orig_vi, orig_ni, orig_ui = tup[0], tup[1], tup[2]
+                    orig_u2 = tup[5] if len(tup) > 5 else orig_ui      # v0.37.0: original UV1 index
                     orig_ci = tup[3] if len(tup) > 3 else 0
                     orig_sb = tup[4] if len(tup) > 4 else None
                     idx += 1
@@ -7701,6 +8531,8 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
                         bl_vi = orig_vi
                     sb_byte = bone_id_to_slot.get(bone_of_bl(bl_vi), 0) * 3
                     nrm_idx = vert_to_nrm_idx[bl_vi] if bl_vi < len(vert_to_nrm_idx) else 0
+                    if normals_preserved:
+                        nrm_idx = orig_ni                              # v0.37.0: original normal table kept
                     tbl_idx = bl_to_table[bl_vi] if bl_vi < len(bl_to_table) else bl_vi
                     if use_sb:
                         dl += struct.pack('>B', sb_byte)
@@ -7710,7 +8542,7 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
                         dl += struct.pack('>H', orig_ci)
                     dl += struct.pack('>H', orig_ui)    # original UV table index (preserved)
                     if hu:
-                        dl += b'\x00\x00'
+                        dl += struct.pack('>H', orig_u2)               # v0.37.0: was b'\x00\x00' (-> black texel)
             pad = (32 - len(dl) % 32) % 32
             dl += b'\x00' * pad
             return bytes(dl)
@@ -7754,7 +8586,8 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
                         bid = 0
                     slot = bone_id_to_slot.get(bid, 0)
                 col_idx = loop_color_arr.get(li, 0) if hc else 0
-                verts.append((slot * 3, bl_to_table[vi], vert_to_nrm_idx[vi], col_idx, loop_uv_arr.get(li, 0)))   # v0.34.0: table index
+                verts.append((slot * 3, bl_to_table[vi], vert_to_nrm_idx[vi], col_idx, loop_uv_arr.get(li, 0),
+                              loop_uv1_arr.get(li, loop_uv_arr.get(li, 0))))   # v0.34.0: table index; v0.37.0: + UV1
             face_vtx[fi] = verts
 
         # Step 2: directed-edge adjacency keyed on full vertex tuples.
@@ -7815,7 +8648,7 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
         for strip in strips:
             dl += b'\x98'
             dl += struct.pack('>H', len(strip))
-            for (sb, pos, nrm, col, uv) in strip:
+            for (sb, pos, nrm, col, uv, uv1) in strip:
                 if use_sb:
                     dl += struct.pack('>B', sb)
                 dl += struct.pack('>H', pos)
@@ -7824,7 +8657,7 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
                     dl += struct.pack('>H', col)
                 dl += struct.pack('>H', uv)
                 if hu:
-                    dl += b'\x00\x00'
+                    dl += struct.pack('>H', uv1)       # v0.37.0: was b'\x00\x00'
 
         pad = (32 - len(dl) % 32) % 32
         dl += b'\x00' * pad
@@ -8000,7 +8833,7 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
                     addon_loop_to_nrm[(poly.index, vi)] = nrm_key_to_idx[nkey]
 
             # Build UV mapping for addon mesh.
-            addon_uvl = addon_mesh.uv_layers.active
+            addon_uvl = fe_uv0_layer(addon_mesh)       # v0.37.0
             addon_loop_uv = {}   # addon loop index → global UV table index
 
             # For addon meshes with gs_data, build a float-to-UV mapping from original UVs.
@@ -8084,8 +8917,7 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
                 if _acol:
                     for poly in addon_mesh.polygons:
                         for li in poly.loop_indices:
-                            r, g, b, a = _acol.data[li].color
-                            key = (round(r * 255), round(g * 255), round(b * 255), round(a * 255))
+                            key = fe_get_rgba(_acol.data[li], fe_col_is_raw(addon_obj))      # v0.37.0
                             if key not in col_key_to_idx:
                                 ci = len(col_table)
                                 col_key_to_idx[key] = ci
@@ -8362,8 +9194,10 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
                     else:
                         col_i = 0
                     ui = struct.unpack('>H', raw_orig[ptr:ptr+2])[0]; ptr += 2
-                    if hu: ptr += 2
-                    tuples_ordered.append((vi, ni, ui, col_i, sb_val))
+                    u2_val = 0
+                    if hu:
+                        u2_val = struct.unpack('>H', raw_orig[ptr:ptr+2])[0]; ptr += 2      # v0.37.0: keep UV1
+                    tuples_ordered.append((vi, ni, ui, col_i, sb_val, u2_val))
             orig_dl_vert_tuples[ci] = tuples_ordered
             orig_dl_strip_lengths[ci] = strip_lengths
 
@@ -8740,7 +9574,7 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
         orig_strip_lens_for_chunk = None
 
         if uv_was_modified:
-            print(f"  [DL] Chunk {ci}: greedy mode (UVs were modified, forcing greedy)")
+            print(f"  [DL] Chunk {ci}: greedy mode (UV / UV1 / colours were modified, forcing greedy)")
         elif ci < n_orig_face_chunks and ci in orig_dl_vert_tuples:
             tuples = orig_dl_vert_tuples[ci]
             slens  = orig_dl_strip_lengths.get(ci, [])
@@ -8958,10 +9792,13 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
     # chunk with the same material, else the last original list.
     _orig_lists = gs_original_chunk_lists(raw_orig, chunk_list_addr, n_orig_chunks)
     _rp_by_name = {}
+    _style_by_name = {}                                    # v0.37.3: style flags of the material, for new / addon chunks
     for _bm in list(mesh.materials) + [_am for _ao in (addon_mesh_objs or []) if _ao is not None
                                        for _am in _ao.data.materials]:
         if _bm is not None and 'fe_render_pass' in _bm:
             _rp_by_name.setdefault(fe_material_export_name(_bm, mat_name_mode), int(_bm['fe_render_pass']))
+        if _bm is not None and 'fe_style_flags' in _bm:
+            _style_by_name.setdefault(fe_material_export_name(_bm, mat_name_mode), int(_bm['fe_style_flags']) & FE_STYLE_MASK)
     for ci, ch in enumerate(chunks_out):
         ch['_mat_idx'] = get_mat_idx_for_chunk(ci)
         if ci < n_orig_face_chunks and ci < len(_orig_lists):
@@ -8976,6 +9813,9 @@ def export_gs_full_rebuild(mesh_obj, filepath, addon_mesh_objs=None, vc_mode='BL
             _lid = _orig_lists[min(n_orig_face_chunks, len(_orig_lists)) - 1] if _orig_lists else 0
         ch['list'] = max(0, min(2, int(_lid)))
         ch['prim_type'] = 0x38 + 0x20 * ch['list']      # fmt high byte mirrors the list (0x3x / 0x5x / 0x7x)
+        _st = _style_by_name.get(_nm, 0)                # v0.37.3: 0x100 / 0x200 live in the high byte, 0x40 / 0x80 in the low one
+        ch['prim_type'] |= (_st >> 8) & 0x03
+        ch['fmt2'] = (ch['fmt2'] & ~0xC0) | (_st & 0xC0)
     chunks_out[:] = sorted(chunks_out, key=lambda c: c['list'])      # stable: original order kept inside a list
     print(f"  [v0.35.1] draw lists: {dict(Counter(c['list'] for c in chunks_out))} (0 = 0x5C, 1 = 0x60, 2 = 0x64)")
 
@@ -9759,6 +10599,7 @@ class FE_OT_ImportTPLToBody(bpy.types.Operator, ImportHelper):
             n_mats, n_imgs = fe_apply_tpl_to_materials(mats, self.filepath, self.import_as.strip())
             for m in meshes:                                  # v0.35.4: remember the original .tpl name
                 m['fe_tpl_filename'] = os.path.basename(self.filepath)
+                m['fe_texture_formats'] = fe_texture_format_pairs([x for x in m.data.materials if x is not None])      # v0.37.3
         except Exception as e:
             self.report({'ERROR'}, f"Texture import failed: {e}")
             import traceback; traceback.print_exc()
